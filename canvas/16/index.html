@@ -1,0 +1,46 @@
+<html>
+    <head>
+        <style>
+            html,body{text-align:center;width:100%;height:100%;padding:0px;margin:0px;overflow:hidden;background:black;}
+            iframe{border:0px;overflow:hidden;}
+            .container {
+                  height: 100%;
+                  position: relative;
+                  border: 0px solid green;
+                }
+
+                .center {
+                  margin: 0;
+                  position: absolute;
+                  top: 50%;
+                  left: 50%;
+                  -ms-transform: translate(-50%, -50%);
+                  transform: translate(-50%, -50%);
+                }
+                #contenedor{position:relative;width:300px;height:300px;perspective: 400px;perspective-origin: 50% 50%;}
+                #contenedor iframe{
+                transform: rotateY(20deg);
+                }
+        </style>
+    </head>
+    <body class="container">
+        
+        <div id="contenedor" class="center">
+        	<iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:-300px;"></iframe>
+        	<iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:-250px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:-200px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:-150px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:-100px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:-50px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:0px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:50px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:150px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:200px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:250px;"></iframe>
+        <iframe width=300 height=300 src="ui.html" scrolling="no" style="position:absolute;left:300px;"></iframe>
+        </div>
+        
+        
+            
+    </body>
+</html>

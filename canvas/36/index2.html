@@ -1,0 +1,134 @@
+<html>
+	
+	<head>
+		<style>body{overflow:hidden;padding:0px;margin:0px;background:black;}</style>
+		
+	</head>
+	<body>
+		<canvas id="lienzo" width=1920 height=1080></canvas>
+		<script>
+		numerodelados = Math.round(Math.random()*40)+10
+		var centrox = 1920/2
+           	var centroy = 1080/2
+			class Circulo{
+				constructor(x,y,angulo){
+					this.x = x
+					this.y = y
+					this.radio = 1
+					this.a = angulo
+					this.vertice = new Array()
+					for(var i  = 0;i<numerodelados;i++){
+						this.vertice[i] = Math.random()
+					}
+					
+				}
+				dibuja(){
+					//console.log("dibuja")
+					this.mipoligono(this.x,this.y,numerodelados,this.radio,"white",this.a)
+				}
+				mueve(){
+					this.radio *= 1.08;
+					this.dibuja()
+				}
+				mipoligono(cx,cy,lados,radio,color,angulo){
+					for(var i = 0;i<lados;i++){
+						if(this.vertice[i] < 1){
+						contexto.fillStyle= color
+						contexto.beginPath()
+	                    contexto.arc(
+	                        cx+Math.cos(Math.PI*2*(i/lados)+angulo)*radio,
+	                        cy+Math.sin(Math.PI*2*(i/lados)+angulo)*radio,
+	                        radio/50,
+	                        0,
+	                        Math.PI*2
+	                    )
+	                    contexto.closePath()
+	                    contexto.fill()
+	                   }
+	                }
+				
+            		}
+			}
+			function poligono(cx,cy,lados,radio,color,angulo){
+				for(var i = 0;i<lados;i++){
+					
+					contexto.fillStyle= color
+					contexto.beginPath()
+                    contexto.arc(
+                        cx+Math.cos(Math.PI*2*(i/lados)+angulo)*radio,
+                        cy+Math.sin(Math.PI*2*(i/lados)+angulo)*radio,
+                        radio/50,
+                        0,
+                        Math.PI*2
+                    )
+                    contexto.closePath()
+                    contexto.fill()
+                    
+                }
+				
+            }
+            var circulos = new Array()
+            
+            console.log(circulos[0])
+            var cursorx = centrox;
+            var cursory = centroy
+            var cursorangulo = Math.random()*Math.PI*2
+            
+            contexto = document.getElementById("lienzo").getContext("2d")
+            contexto.shadowBlur = 15;
+            contexto.shadowColor = "white"
+            contexto.lineWidth = 5
+            var temporizador = setTimeout("bucle()",1000)
+            var tiempo = 0;
+            function bucle(){
+            	contexto.clearRect(0,0,1920,1080)
+            	//contexto.fillStyle = "rgba(0,0,0,0.5)"
+            //	contexto.fillRect(0,0,1920,1080)
+            		if(cursorx < 200){cursorangulo += Math.PI;cursorx = 200}
+            		if(cursory < 200 ){cursorangulo += Math.PI;cursory = 200;}
+            		if(cursorx > 1920-200){cursorangulo += Math.PI;cursorx = 1720}
+            		if(cursory > 1080-200){cursorangulo += Math.PI;cursory = 880}
+	            	tiempo++
+	            	if(tiempo % 1 == 0){
+	            		circulos.push(new Circulo(cursorx,cursory,tiempo/300))
+	            		
+	            	}
+	            	//console.log("ok")
+            		cursorx+=Math.cos(cursorangulo)*5
+            		cursory+=Math.sin(cursorangulo)*5
+            		cursorangulo += (Math.random()-0.5)*0.7
+            		for(var i = 0;i<circulos.length;i++){
+            			//console.log(circulos[i].x)
+            			circulos[i].mueve()
+            			
+            		}
+            		/*
+            		if(circulos.length > 2){
+	            		for(var i = 1;i<circulos.length;i++){
+	            			for(var j = 0;j<numerodelados;j++){
+	            			contexto.beginPath()
+			                contexto.moveTo(circulos[i].x+Math.cos((j/numerodelados)*Math.PI*2+circulos[i].a)*circulos[i].radio,circulos[i].y+Math.sin((j/numerodelados)*Math.PI*2+circulos[i].a)*circulos[i].radio)
+			                contexto.lineTo(circulos[i-1].x+Math.cos((j/numerodelados)*Math.PI*2+circulos[i-1].a)*circulos[i-1].radio,circulos[i-1].y+Math.sin((j/numerodelados)*Math.PI*2+circulos[i-1].a)*circulos[i-1].radio)
+			                
+			                contexto.closePath()
+			                contexto.fillStyle = "white"
+			                //contexto.fill();
+			                contexto.strokeStyle = "white"
+			                contexto.stroke()
+		               }
+	            		}
+            		}
+            		*/
+            		for(var i = 0;i<circulos.length;i++){
+            			//console.log(circulos[i].x)
+            			if(circulos[i].radio > 1920){
+            				circulos.splice(i,1)
+            			}
+            			
+            		}
+            		clearTimeout(temporizador)
+            		temporizador = setTimeout("bucle()",10)
+            }
+		</script>
+	</body>
+</html>

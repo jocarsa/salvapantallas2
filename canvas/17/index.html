@@ -1,0 +1,195 @@
+<html>
+    <head>
+        <style>
+            html,body{overflow:hidden;padding:0px;margin:0px;}
+            canvas{position:absolute;top:0px;left:0px;}
+            #lienzo1{display:none;}
+        </style>
+    </head>
+    <body>
+        <canvas id="lienzo" width="512" height="512"> </canvas>
+        <canvas id="lienzo2" width="512" height="512"> </canvas>
+        <script>
+            var anchura = window.innerWidth
+            var altura = window.innerHeight;
+            document.getElementById("lienzo").width = anchura
+            document.getElementById("lienzo").height = altura
+            document.getElementById("lienzo2").width = anchura
+            document.getElementById("lienzo2").height = altura
+            var radiomaximo = 10;
+            var tiempo = 0;
+            var velocidadmaxima = 20;
+            class Pelota {
+                constructor(){
+                    this.x = anchura-Math.random()*anchura
+                    this.y = Math.random()*100
+                    this.r = Math.random()*radiomaximo+5
+                    this.vx = (Math.random()-0.5)*5
+                    this.vy = (Math.random()-0.5)*5
+                    this.a = Math.random()*Math.PI*2
+                    this.red = Math.round(Math.random()*255)
+                    this.green = Math.round(Math.random()*255)
+                    this.blue = Math.round(Math.random()*255)
+                }
+            }
+            
+            
+            
+            var numeropelotas = 10;
+            var pelotas = new Array();
+            
+            var pelotast1 = new Array();
+            var pelotast2 = new Array();
+            var pelotast3 = new Array();
+            var pelotast4 = new Array();
+            var pelotast5 = new Array();
+            
+            for(var i = 0;i<numeropelotas;i++){
+                pelotas[i] = new Pelota();
+            }
+            
+            var numerosensores = 13
+            
+            
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            var contexto2 = document.getElementById("lienzo2").getContext("2d")
+            contexto.lineWidth = 20;
+            contexto2.lineWidth = 20;
+            contexto2.lineCap = "round"
+            var numerolineas = 5;
+            var punto1x = new Array();
+            var punto2x = new Array();
+            var punto1y = new Array();
+            var punto2y = new Array();
+            for(var i = 0;i<numerolineas;i++){
+                punto1x[i] = Math.random()*anchura*0.25+anchura*0.25
+                punto1y[i] = Math.random()*altura*0.25+altura*0.25
+                punto2x[i] = Math.random()*anchura*0.5+anchura*0.25
+                punto2y[i] = Math.random()*altura*0.5+altura*0.25
+                
+            }
+            for(var i = 0;i<numerolineas;i++){
+                contexto.beginPath()
+                contexto.moveTo(punto1x[i],punto1y[i])
+                contexto.lineTo(punto2x[i],punto2y[i])
+                contexto.stroke();
+                contexto.closePath();
+            }
+            var temporizador = setTimeout("bucle()",1000)
+            function bucle(){
+            	
+            		
+            	
+                contexto.clearRect(0,0,anchura,altura)
+                contexto2.fillStyle = "rgba(255,255,255,0.5)"
+                contexto2.fillRect(0,0,anchura,altura)
+                for(var i = 0;i<numerolineas;i++){
+	                contexto.beginPath()
+	                contexto.moveTo(punto1x[i],punto1y[i])
+	                contexto.lineTo(punto2x[i],punto2y[i])
+	                contexto.stroke();
+	                contexto.closePath();
+	                contexto2.beginPath()
+	                contexto2.moveTo(punto1x[i],punto1y[i])
+	                contexto2.lineTo(punto2x[i],punto2y[i])
+	                contexto2.stroke();
+	                contexto2.closePath();
+	            }
+	            
+                for(var i = 0;i<numeropelotas;i++){
+                    if(pelotas[i].x < 0 || pelotas[i].x > anchura){
+                        pelotas[i].vx = 0-pelotas[i].vx*1;
+                    }
+                    if(pelotas[i].y < 0 ){
+                        pelotas[i].vy = 0-pelotas[i].vy*1;
+                    }
+                    pelotas[i].vy += 0.1;
+                    pelotas[i].x += pelotas[i].vx
+                    pelotas[i].y += pelotas[i].vy
+                    contexto.beginPath();
+                    contexto.fillStyle = "rgb("+pelotas[i].red+","+pelotas[i].green+","+pelotas[i].blue+")"
+                    contexto.arc(pelotas[i].x,pelotas[i].y,pelotas[i].r,0,Math.PI*2,true);
+                    contexto.fill();
+                    contexto.closePath();
+                    
+                    
+                    if(pelotas[i].y > altura-pelotas[i].r){
+                        pelotas[i].vy = (0-pelotas[i].vy)*0.8
+                        pelotas[i].y = altura-pelotas[i].r;
+                    }
+                    // Colision
+                    
+                    //console.log(pelotas[i].vy)
+                }
+                for(var i = 0;i<numeropelotas;i++){pelotast5[i] = pelotast4[i];}
+                 for(var i = 0;i<numeropelotas;i++){pelotast4[i] = pelotast3[i];}
+                for(var i = 0;i<numeropelotas;i++){pelotast3[i] = pelotast2[i];}
+                for(var i = 0;i<numeropelotas;i++){pelotast2[i] = pelotast1[i];}
+                for(var i = 0;i<numeropelotas;i++){pelotast1[i] = pelotas[i];}
+                if(tiempo > 10){
+                for(var i = 0;i<numeropelotas;i++){
+                	
+                }
+                }
+                datoscogidos = contexto.getImageData(0,0,anchura,altura)
+                for(var i = 0;i<numeropelotas;i++){
+                    for(var col = 0;col<numerosensores;col++){
+                        mix = Math.round(pelotas[i].x+Math.cos((Math.PI*2*col)/numerosensores)*(pelotas[i].r+3))
+                        miy = Math.round(pelotas[i].y+Math.sin((Math.PI*2*col)/numerosensores)*(pelotas[i].r+3))
+                        if(
+                            datoscogidos.data[mix*4+miy*anchura*4+3] > 10){
+                            pelotas[i].vx = 0;
+                            pelotas[i].vy = 0;
+                        }
+                        
+                    }
+                    
+                }
+                for(var i = 0;i<numeropelotas;i++){
+                	numsensores = 0;
+                    for(var col = 0;col<numerosensores;col++){
+                        mix = Math.round(pelotas[i].x+Math.cos((Math.PI*2*col)/numerosensores)*(pelotas[i].r+3))
+                        miy = Math.round(pelotas[i].y+Math.sin((Math.PI*2*col)/numerosensores)*(pelotas[i].r+3))
+                        if(
+                            datoscogidos.data[mix*4+miy*anchura*4+3] > 10){
+                            numsensores++;
+                            pelotas[i].vx += 0-Math.cos((Math.PI*2*col)/numerosensores)*0.5    ;
+                            pelotas[i].vy += 0-Math.sin((Math.PI*2*col)/numerosensores)*0.5;
+                            
+                        }
+                        
+                    }
+                    pelotas[i].x += pelotas[i].vx*3   ;
+                    pelotas[i].y += pelotas[i].vy*3;
+                    if(typeof pelotast5[i] === 'undefined'){}else{
+                		xfinal = (pelotast1[i].x+pelotast2[i].x+pelotast3[i].x+pelotast4[i].x+pelotast5[i].x)/5
+                		yfinal = (pelotast1[i].y+pelotast2[i].y+pelotast3[i].y+pelotast4[i].y+pelotast5[i].y)/5
+                		//console.log(xfinal+"-"+pelotast1[i].x+"-"+pelotast2[i].x+"-"+pelotast3[i].x+"-"+pelotast4[i].x+"-"+pelotast5[i].x)
+                		contexto2.beginPath();
+                    contexto2.fillStyle = "rgb("+pelotas[i].red+","+pelotas[i].green+","+pelotas[i].blue+")"
+                    contexto2.arc(xfinal,yfinal,pelotas[i].r+2,0,Math.PI*2,true);
+                    contexto2.fill();
+                    contexto2.closePath();
+                   }
+                }
+                for(var i = 0;i<numeropelotas;i++){
+                    
+                }
+                
+                if(tiempo%2 == 0){
+                    pelotas[numeropelotas] = new Pelota();
+                    numeropelotas++;
+                }
+                 clearTimeout(temporizador)
+               	if(pelotas.length > 3000){
+               		window.location = window.location
+               	}else{
+               		 temporizador = setTimeout("bucle()",1)
+               	}
+                tiempo++;
+               
+               
+            }
+        </script>
+    </body>
+</html>

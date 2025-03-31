@@ -1,0 +1,203 @@
+<html>
+    <head>
+        <script src="https://code.jquery.com/jquery-3.6.1.js" integrity="sha256-3zlB5s2uwoUzrXK3BT7AX3FyvojsraNFxCc2vC/7pNI=" crossorigin="anonymous"></script>
+        <style>
+            html,body{padding:0px;margin:0px;overflow:hidden;background:black;}
+            canvas{position:absolute;top:0px;left:0px;}
+            #velocidad{position:absolute;top:10px;left:10px;}
+        </style>
+    </head>
+    <body>
+        <canvas id="lienzo" width=512 height=512></canvas>
+        <canvas id="lienzo2" width=512 height=512></canvas>
+        <input type="range" id="velocidad" min=0 max=100>
+        <script>
+            var desfasex = 0;
+            var desfasey = 0;
+            var click = false;
+            xinicial = 0;
+            yinicial = 0;
+            xfinal = 0;
+            yfinal = 0;
+            tempo = 5;
+            $(document).ready(function(){
+                $("#lienzo2").mousedown(function(event){
+                    xinicial = event.offsetX;
+                    yinicial = event.offsetY;
+                    
+                })
+                $("#lienzo2").mouseup(function(){
+                    console.log(particulas.length)
+                    xfinal = event.offsetX;
+                    yfinal = event.offsetY;
+                    for(var i = 0;i<1;i++){
+                    particulas.push(new Particula());
+                       
+                    console.log(xfinal - xinicial)
+                    console.log(yfinal - yinicial)
+                    particulas[particulas.length-1].vx = ((xfinal - xinicial)+(Math.random()-0.5)*100)/5
+                    particulas[particulas.length-1].vy = ((yfinal - yinicial)+(Math.random()-0.5)*100)/5
+                    particulas[particulas.length-1].x = desfasex+xfinal-anchura/2
+                    particulas[particulas.length-1].y = desfasey+yfinal-altura/2
+                        
+                        xinicial = 0;
+                        yinicial = 0;
+                        xfinal = 0;
+                        yfinal = 0;
+                         }
+                })
+                $("#velocidad").change(function(){
+                    tempo = $(this).val()
+                    
+                })
+            })
+            var anchura = window.innerWidth;
+            var altura = window.innerHeight;
+            var dx = 0;
+            var dy = 0;
+            document.getElementById("lienzo").width = anchura;
+            document.getElementById("lienzo").height = altura;
+            document.getElementById("lienzo2").width = anchura;
+            document.getElementById("lienzo2").height = altura;
+            var tiempo = 0;
+            class Particula {
+                constructor(){
+                		
+                    this.x = Math.random()*anchura
+                    this.x2 = 0;
+                    
+                    this.y = Math.random()*altura
+                    this.y2 = 0;
+                    var angleRadians = Math.atan2(altura/2 - this.y, anchura/2 - this.x);
+                    this.vx = (Math.cos(angleRadians+Math.PI/2))*15
+                    this.vy = (Math.sin(angleRadians+Math.PI/2))*15
+                    this.r = Math.round(Math.random()*255)
+                    this.g = Math.round(Math.random()*255)
+                    this.b = Math.round(Math.random()*255)
+                    this.m = Math.random()*10
+                    this.inamovible = false;
+                    this.visile = 1
+                }
+            }
+            
+            var particulas = new Array();
+            var numeroparticulas = 0;
+            particulas[0] = new Particula();
+            particulas[0].x = anchura/2;
+            particulas[0].y = altura/2;
+            particulas[0].m = 550;
+            particulas[0].inamovible = true;
+            for(var i = 1;i<numeroparticulas;i++){
+                particulas[i] = new Particula();
+            }
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            
+            var contexto2 = document.getElementById("lienzo2").getContext("2d")
+            //contexto2.shadowColor = "red";
+            //contexto2.shadowBlur = 15;
+            contexto.strokeStyle = "rgba(255,255,255,0.05)"
+            contexto.lineWidth = 1
+            var temporizador = setTimeout("bucle()",1000)
+            var factorzoom = 1
+            var overlayOpacity = 0.1;
+            function bucle(){
+                desfasex = particulas[0].x
+                desfasey = particulas[0].y
+            	//contexto2.clearRect(0,0,anchura,altura)
+            	dx = 0;
+            	dy = 0;
+            	
+                contexto2.fillStyle = "rgba(0,0,0,0.05)"
+               contexto2.fillRect(0,0,anchura,altura)
+               
+                for(var i = 1;i<particulas.length;i++){
+                    if(Math.sqrt((Math.pow(particulas[0].x-particulas[i].x,2))+(Math.pow(particulas[0].y-particulas[i].y,2))) < (particulas[0].m/5)/factorzoom){
+                        console.log("colision")
+                        contexto2.fillStyle = "white"
+                        contexto2.beginPath()
+                        contexto2.arc(particulas[i].x/factorzoom-desfasex+anchura/2,particulas[i].y/factorzoom-desfasey+altura/2,30/factorzoom,0,Math.PI*2,true)
+                        contexto2.closePath()
+                        contexto2.fill();
+                        particulas.splice(i,1)
+                        numeroparticulas--;
+                    }
+                }
+                
+                //console.log(particulas[0].m)
+                for(var i = 0;i<particulas.length;i++){
+                    if(i!= 0){
+                	//console.log(i+":"+particulas[i].x+","+particulas[i].y)
+                        }
+                    particulas[i].x += particulas[i].vx
+                    particulas[i].y += particulas[i].vy
+                    for(var j = 0;j<particulas.length;j++){
+                        if( 
+                        	i != j
+                        	&&
+                        	(Math.abs(particulas[j].x - particulas[i].x) < 3500)
+                        	&&
+                        	(Math.abs(particulas[j].y - particulas[i].y) < 3500)
+                        	){
+                        var angleRadians = Math.atan2(particulas[j].y - particulas[i].y, particulas[j].x - particulas[i].x);
+                        var a = particulas[j].x - particulas[i].x;
+                        var b = particulas[j].y - particulas[i].y;
+
+                        var distancia = Math.sqrt( a*a + b*b );
+                        
+                        particulas[i].vx += (Math.cos(angleRadians)/distancia)*(particulas[j].m+1)
+	                    particulas[i].vy += (Math.sin(angleRadians)/distancia)*(particulas[j].m+1)
+	                       
+                        
+                    }
+                    }
+                   
+                   
+                    contexto2.fillStyle = "rgba("+particulas[i].r+","+particulas[i].g+","+particulas[i].b+",0.5)"
+                    contexto2.strokeStyle = "rgba("+particulas[i].r+","+particulas[i].g+","+particulas[i].b+",0.5)"
+                    contexto2.beginPath()
+                    contexto2.arc(
+                        particulas[i].x/factorzoom-desfasex+anchura/2,
+                        particulas[i].y/factorzoom-desfasey+altura/2,
+                        Math.round(particulas[i].m/5)/factorzoom,
+                        0,
+                        Math.PI*2,
+                        true
+                    )
+                    contexto2.closePath();
+                    contexto2.fill();
+                    contexto.strokeStyle = "rgba("+particulas[i].r+","+particulas[i].g+","+particulas[i].b+",0.5)"
+                    if(i != 0 ){
+                        if(particulas[i].x2 != 0){
+                    contexto2.lineWidth = particulas[i].m*0.3/factorzoom
+                    contexto2.beginPath();
+                    contexto2.moveTo(particulas[i].x/factorzoom-desfasex+anchura/2,
+                        particulas[i].y/factorzoom-desfasey+altura/2)
+                    contexto2.lineTo(particulas[i].x2,particulas[i].y2)
+                    contexto2.closePath();
+                    contexto2.stroke();
+                            }
+                    particulas[i].x2 = particulas[i].x/factorzoom-desfasex+anchura/2
+                    particulas[i].y2 = particulas[i].y/factorzoom-desfasey+altura/2
+                    
+                   }
+                    
+                    
+                    
+                }
+				/*
+                if(tiempo % 100 == 0){
+                    	 particulas.push(new Particula());
+                    	 particulas[particulas.length - 1].x = particulas[0].x + Math.random()*anchura-anchura/2
+                    	 particulas[particulas.length - 1].y = particulas[0].y + Math.random()*altura-altura/2
+                    }
+					*/
+                tiempo++;
+                
+                
+                //console.log("ok")
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",tempo)
+            }
+        </script>
+    </body>
+</html>

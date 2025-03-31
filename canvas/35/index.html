@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+	<head>
+		<style>
+			body{overflow:hidden;padding:0px;margin:0px;background:black;}
+		</style>
+	</head>
+	<body>
+		<canvas width=1920 height=1080 id="lienzo"></canvas>
+		<script>
+		var contexto = document.getElementById("lienzo").getContext("2d")
+		//contexto.shadowBlur = 5;
+		var temporizador = setTimeout("bucle()",1000)
+		class Cursor{
+			constructor(){
+				this.x = Math.random()*1920
+				this.y = Math.random()*1080
+				this.a = Math.random()*Math.PI*2
+				this.r = Math.round(Math.random()*255)
+				this.g = Math.round(Math.random()*255)
+				this.b = Math.round(Math.random()*255)
+				this.radio = Math.random()*10
+			}
+			mueve(){
+				this.x += Math.cos(this.a)*0.2
+				this.y += Math.sin(this.a)*0.2
+				//this.a += (Math.random()-0.5)*1+0.1
+				this.r += (Math.random()-0.5)*5
+				this.g += (Math.random()-0.5)*5
+				this.b += (Math.random()-0.5)*5
+				
+				if(this.r < 0){this.r = 0;}
+				if(this.g < 0){this.g = 0;}
+				if(this.b < 0){this.b = 0;}
+				
+				if(this.r > 255){this.r = 255;}
+				if(this.g > 255){this.g = 255;}
+				if(this.b > 255){this.b = 255;}
+				
+				this.dibuja()
+				this.colisiona()
+				this.radio += Math.random()-0.5
+				if(this.radio < 0){
+					this.radio = 0
+				}
+				if(this.radio > 10){
+					this.radio = 10
+				}
+			}
+			colisiona(){
+				if(this.x < 0 || this.x > 1920 || this.y < 0 || this.y > 1080){
+					this.a += Math.PI
+				}
+			}
+			dibuja(){
+				contexto.shadowColor = "rgba("+(Math.round(this.r))+","+(Math.round(this.g))+","+(Math.round(this.b))+",0.1)";
+				contexto.fillStyle = "rgba("+(Math.round(this.r))+","+(Math.round(this.g))+","+(Math.round(this.b))+",0.1)"
+				contexto.beginPath()
+				contexto.arc(this.x,this.y,this.radio,0,Math.PI*2)
+				contexto.closePath()
+				contexto.fill()
+			}
+		}
+		var cursores = new Array();
+		
+		for(var i = 0;i<2000;i++){
+			cursores[i] = new Cursor()
+		}
+			function bucle(){
+				//console.log("hola")
+				//contexto.fillStyle = "rgba(0,0,0,0.01)"
+				//contexto.fillRect(0,0,1920,1080)
+				for(var i =0;i<cursores.length;i++){cursores[i].mueve()}
+				//contexto.save()
+				contexto.translate(1920/2,1080/2)
+				contexto.rotate(0.001)
+				contexto.translate(-1920/2,-1080/2)
+				//contexto.restore()
+				clearTimeout(temporizador)
+				temporizador = setTimeout("bucle()",1)
+			}
+		</script>
+	</body>
+</html>

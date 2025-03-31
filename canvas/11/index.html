@@ -1,0 +1,73 @@
+<html>
+	<head>
+		<style>
+			html,body{overflow:hidden;margin:0px;padding:0px;}
+		</style>
+	</head>
+	<body>
+		
+		<canvas id="lienzo" width=512 height=512></canvas>
+		<script>
+			
+			var anchura = window.innerWidth;
+			var altura = window.innerHeight;
+			
+			document.getElementById("lienzo").width = anchura
+			document.getElementById("lienzo").height = altura
+			var p1x = new Array();
+			var p1y = new Array();
+			var p1xtemp = new Array();
+			var p1ytemp = new Array();
+			var p1d = new Array();
+			var numeroparticulas = 100;
+			var r = new Array();
+			var g = new Array();
+			var b = new Array();
+			var velocidad = new Array();
+			for(var i = 0;i<numeroparticulas;i++){
+				p1x[i] = Math.random()*anchura;
+				p1y[i] = Math.random()*altura;
+				p1d[i] = Math.random()*Math.PI*2
+				r[i] = Math.round(Math.random()*255)
+			g[i] = Math.round(Math.random()*255)
+			b[i] = Math.round(Math.random()*255)
+			velocidad[i] = 3;
+			}
+			
+			
+			
+			
+			
+			
+			var contexto = document.getElementById("lienzo").getContext("2d")
+			contexto.strokeStyle = "rgb(255,255,255)"
+			var temporizador = setTimeout("bucle()",1000)
+			function bucle(){
+				for(var i = 0;i<numeroparticulas;i++){
+					
+					contexto.fillStyle = "rgba("+Math.abs(r[i]%255)+","+Math.abs(g[i]%255)+","+Math.abs(b[i]%255)+",0.3)"
+					contexto.fillRect(p1x[i],p1y[i],3,3)
+					contexto.beginPath();
+					contexto.moveTo(p1xtemp[i],p1ytemp[i])
+					contexto.moveTo(p1x[i],p1y[i])
+					contexto.stroke();
+					contexto.closePath();
+					
+					if(p1x[i] < 0 || p1x[i] > anchura || p1y[i] < 0 || p1y[i] > altura){p1d[i]+=Math.PI}
+					p1x[i] += Math.cos(p1d[i])*velocidad[i]
+					p1y[i] += Math.sin(p1d[i])*velocidad[i]
+					p1d[i] += 0.1 + (Math.random()*-0.5)*0.2
+					r[i] += Math.round((Math.random()-0.5)*4)
+					g[i] += Math.round((Math.random()-0.5)*4)
+					b[i] += Math.round((Math.random()-0.5)*4)
+					//console.log("ok")
+					p1xtemp[i] = p1x[i]
+					p1ytemp[i] = p1y[i]
+				}
+				
+				clearTimeout(temporizador)
+				temporizador = setTimeout("bucle()",1)
+			}
+		</script>
+	</body>
+</html>

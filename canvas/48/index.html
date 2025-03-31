@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Particle System with Audio</title>
+    <script src="https://code.jquery.com/jquery-3.6.1.js" integrity="sha256-3zlB5s2uwoUzrXK3BT7AX3FyvojsraNFxCc2vC/7pNI=" crossorigin="anonymous"></script>
+    <style>
+        html, body {
+            padding: 0;
+            margin: 0;
+            overflow: hidden;
+            background: black;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #velocidad {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="lienzo" width="512" height="512"></canvas>
+    <canvas id="lienzo2" width="512" height="512"></canvas>
+    <input type="range" id="velocidad" min="0" max="100">
+
+    <script>
+     // Audio Context and Oscillator Management
+var audioContext = new (window.AudioContext || window.webkitAudioContext)();
+var oscillators = {};
+
+function createOscillator(particleIndex) {
+    var oscillator = audioContext.createOscillator();
+    oscillator.type = 'sine'; // Sine wave for smooth sound
+    oscillator.frequency.setValueAtTime(440, audioContext.currentTime); // Default frequency
+    oscillator.start();
+
+    var gainNode = audioContext.createGain();
+    gainNode.gain.setValueAtTime(0.1, audioContext.currentTime); // Low gain to avoid loud sound
+
+    oscillator.connect(gainNode).connect(audioContext.destination);
+    oscillators[particleIndex] = { oscillator, gainNode };
+}
+
+function updateOscillatorFrequency(particleIndex, frequency) {
+    if (oscillators[particleIndex]) {
+        oscillators[particleIndex].oscillator.frequency.setValueAtTime(
+            Math.max(20, Math.min(frequency, 20000)), // Clamp frequency to audible range
+            audioContext.currentTime
+        );
+    }
+}
+
+function stopOscillator(particleIndex) {
+    if (oscillators[particleIndex]) {
+        oscillators[particleIndex].oscillator.stop();
+        oscillators[particleIndex].gainNode.disconnect();
+        delete oscillators[particleIndex];
+    }
+}
+
+// Main Particle Simulation
+$(document).ready(function () {
+    $("#lienzo2").mousedown(function (event) {
+        xinicial = event.offsetX;
+        yinicial = event.offsetY;
+    });
+
+    $("#lienzo2").mouseup(function (event) {
+        xfinal = event.offsetX;
+        yfinal = event.offsetY;
+
+        for (var i = 0; i < 1; i++) {
+            let newParticle = new Particula();
+
+            // Position and initial velocity from mouse drag
+            let x = desfasex + xfinal - anchura / 2;
+            let y = desfasey + yfinal - altura / 2;
+
+            let initialVelocityX = (xfinal - xinicial) / 50; // Scale the velocity
+            let initialVelocityY = (yfinal - yinicial) / 50;
+
+            newParticle.vx = initialVelocityX;
+            newParticle.vy = initialVelocityY;
+            newParticle.x = x;
+            newParticle.y = y;
+
+            particulas.push(newParticle);
+
+            // Start oscillator for the new particle
+            createOscillator(particulas.length - 1);
+
+            xinicial = 0;
+            yinicial = 0;
+            xfinal = 0;
+            yfinal = 0;
+        }
+    });
+
+    $("#velocidad").change(function () {
+        tempo = $(this).val();
+    });
+});
+
+function bucle() {
+    desfasex = particulas[0].x;
+    desfasey = particulas[0].y;
+
+    contexto2.fillStyle = "rgba(0,0,0,0.05)";
+    contexto2.fillRect(0, 0, anchura, altura);
+
+    for (var i = 0; i < particulas.length; i++) {
+        if (i !== 0) {
+            let dx = particulas[0].x - particulas[i].x;
+            let dy = particulas[0].y - particulas[i].y;
+
+            let distanceSquared = dx * dx + dy * dy;
+            let distance = Math.sqrt(distanceSquared);
+
+            if (distance > 5) {
+                // Gravitational force calculation
+                let force = particulas[0].m / distanceSquared;
+                let angle = Math.atan2(dy, dx);
+
+                particulas[i].vx += force * Math.cos(angle);
+                particulas[i].vy += force * Math.sin(angle);
+            }
+
+            // Update audio frequency based on distance to the planet
+            let frequency = 200 + (5000 / (distance*2 + 1));
+            updateOscillatorFrequency(i, frequency);
+        }
+
+        // Update particle position
+        particulas[i].x += particulas[i].vx;
+        particulas[i].y += particulas[i].vy;
+
+        // Draw particle
+        contexto2.fillStyle = i === 0 ? "yellow" : `rgba(${particulas[i].r},${particulas[i].g},${particulas[i].b},0.5)`;
+        contexto2.beginPath();
+        contexto2.arc(
+            particulas[i].x / factorzoom - desfasex + anchura / 2,
+            particulas[i].y / factorzoom - desfasey + altura / 2,
+            Math.round(particulas[i].m / 5) / factorzoom,
+            0,
+            Math.PI * 2,
+            true
+        );
+        contexto2.closePath();
+        contexto2.fill();
+    }
+
+    tiempo++;
+    setTimeout(bucle, tempo);
+}
+
+class Particula {
+    constructor() {
+        this.x = Math.random() * anchura;
+        this.y = Math.random() * altura;
+
+        this.vx = 0;
+        this.vy = 0;
+
+        this.r = Math.round(Math.random() * 255);
+        this.g = Math.round(Math.random() * 255);
+        this.b = Math.round(Math.random() * 255);
+        this.m = Math.random() * 10;
+        this.inamovible = false;
+    }
+}
+
+// Setup
+var anchura = window.innerWidth;
+var altura = window.innerHeight;
+
+document.getElementById("lienzo").width = anchura;
+document.getElementById("lienzo").height = altura;
+document.getElementById("lienzo2").width = anchura;
+document.getElementById("lienzo2").height = altura;
+
+var contexto = document.getElementById("lienzo").getContext("2d");
+var contexto2 = document.getElementById("lienzo2").getContext("2d");
+
+var particulas = [];
+var factorzoom = 1;
+
+particulas[0] = new Particula();
+particulas[0].x = anchura / 2;
+particulas[0].y = altura / 2;
+particulas[0].m = 550; // Mass of the central planet
+particulas[0].inamovible = true;
+
+var tiempo = 0;
+var tempo = 5;
+
+bucle();
+
+
+
+    </script>
+</body>
+</html>
+

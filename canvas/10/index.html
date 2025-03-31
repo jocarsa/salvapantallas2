@@ -1,0 +1,110 @@
+<html>
+    <head>
+        <style>
+            html,body{overflow:hidden;padding:0px;margin:0px;}
+            canvas{position:absolute;top:0px;left:0px;}
+        </style>
+    </head>
+    <body>
+        
+        <canvas id="lienzo2" width="512" height="512"> </canvas>
+        <canvas id="lienzo" width="512" height="512"> </canvas>
+        <script>
+            var anchura = window.innerWidth
+            var altura = window.innerHeight;
+            document.getElementById("lienzo").width = anchura
+            document.getElementById("lienzo").height = altura
+            document.getElementById("lienzo2").width = anchura
+            document.getElementById("lienzo2").height = altura
+            var radiomaximo = 10;
+            var tiempo = 0;
+            var velocidadmaxima = 20;
+            class Pelota {
+                constructor(){
+                    this.x = Math.random()*anchura/4
+                    this.y = Math.random()*altura/4
+                    this.r = Math.random()*radiomaximo+20
+                    this.vx = (Math.random()-0.5)*5
+                    this.vy = (Math.random()-0.5)*5
+                    this.a = Math.random()*Math.PI*2
+                    this.red = Math.round(Math.random()*255)
+                    this.green = Math.round(Math.random()*255)
+                    this.blue = Math.round(Math.random()*255)
+                }
+            }
+            var numeropelotas = 10;
+            var pelotas = new Array();
+            for(var i = 0;i<numeropelotas;i++){
+                pelotas[i] = new Pelota();
+            }
+            var numerosensores = 7
+            
+            
+            var contexto = document.getElementById("lienzo").getContext("2d")
+             var contexto2 = document.getElementById("lienzo2").getContext("2d")
+            var temporizador = setTimeout("bucle()",1000)
+            function bucle(){
+                contexto.clearRect(0,0,anchura,altura)
+                contexto2.fillStyle = "rgba(255,255,255,0.1)"
+                contexto2.fillRect(0,0,anchura,altura)
+                for(var i = 0;i<numeropelotas;i++){
+                    if(pelotas[i].x < 0 || pelotas[i].x > anchura){
+                        pelotas[i].vx = 0-pelotas[i].vx;
+                        if(pelotas[i].x < 0){pelotas[i].x = 0}
+                        if(pelotas[i].x > anchura){pelotas[i].x = anchura}
+                    }
+                    if(pelotas[i].y < 0 ){
+                    		pelotas[i].y = 0
+                    		pelotas[i].vy = 0-pelotas[i].vy;
+                    }
+                    pelotas[i].vy += 0.1;
+                    pelotas[i].x += pelotas[i].vx
+                    pelotas[i].y += pelotas[i].vy
+                    contexto.beginPath();
+                    contexto.fillStyle = "rgb("+pelotas[i].red+","+pelotas[i].green+","+pelotas[i].blue+")"
+                    contexto.arc(pelotas[i].x,pelotas[i].y,pelotas[i].r,0,Math.PI*2,true);
+                    contexto.fill();
+                    contexto.closePath();
+                    
+                    contexto2.beginPath();
+                    contexto2.fillStyle = "rgba("+pelotas[i].red+","+pelotas[i].green+","+pelotas[i].blue+",0.1)"
+                    contexto2.arc(pelotas[i].x,pelotas[i].y,pelotas[i].r,0,Math.PI*2,true);
+                    contexto2.fill();
+                    contexto2.closePath();
+                    if(pelotas[i].y > altura-pelotas[i].r){
+                        pelotas[i].vy = (0-pelotas[i].vy)*0.8
+                        pelotas[i].y = altura-pelotas[i].r;
+                        pelotas[i].vx *= 0.9;
+                    }
+                    // Colision
+                    
+                    //console.log(pelotas[i].vy)
+                }
+                for(var i = 0;i<numeropelotas;i++){
+                    for(var col = 0;col<numerosensores;col++){
+                        if(
+                            contexto.getImageData(
+                                pelotas[i].x+Math.cos((Math.PI*2*col)/numerosensores)*(pelotas[i].r+5),
+                                pelotas[i].y+Math.sin((Math.PI*2*col)/numerosensores)*(pelotas[i].r+5),
+                                1,1).data[3] > 10){
+                            pelotas[i].vx = pelotas[i].vx-Math.cos((Math.PI*2*col)/numerosensores)*2;
+                            pelotas[i].vy = pelotas[i].vy-Math.sin((Math.PI*2*col)/numerosensores)*2;
+                            pelotas[i].x += 0-Math.cos((Math.PI*2*col)/numerosensores)*8;
+                            pelotas[i].y += 0-Math.sin((Math.PI*2*col)/numerosensores)*8;
+                            //console.log("col")
+                        }
+                        /*contexto.fillRect(pelotas[i].x+Math.cos((Math.PI*2*col)/6)*(pelotas[i].r+5)-2,
+                                pelotas[i].y+Math.sin((Math.PI*2*col)/6)*(pelotas[i].r+5)-2,4,4)*/
+                    }
+                }
+                if(tiempo%10 == 0){
+                    pelotas[numeropelotas] = new Pelota();
+                    numeropelotas++;
+                }
+                tiempo++;
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",1)
+            }
+        </script>
+    </body>
+</html>

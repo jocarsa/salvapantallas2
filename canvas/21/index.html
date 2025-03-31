@@ -1,0 +1,52 @@
+<html>
+    <head>
+        <script src="https://code.jquery.com/jquery-3.6.0.js" integrity="sha256-H+K7U5CnXl1h5ywQfKtSj8PCmoN9aaq30gDh27Xc0jk=" crossorigin="anonymous"></script>
+        <style>
+            body,html{
+                overflow:hidden;
+                margin:0px;
+                padding:0px;
+                
+            }
+        </style>
+    </head>
+    <body>
+    
+        <canvas id="lienzo" width=512 height=512></canvas>
+        <script>
+            var anchura = window.innerWidth;
+            var altura = window.innerHeight;
+            var tiempo = 0;
+            document.getElementById("lienzo").width = anchura;
+            document.getElementById("lienzo").height = altura;
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            var numerocirculos = 100;
+            var centrox = Math.random()*anchura
+            var centroy = Math.random()*altura
+            var paso = Math.random()*25+1
+            contexto.lineWidth = 5
+			
+			var a1 = []
+			var a2 = []
+			for(var i = 0;i<numerocirculos;i++){
+				a1[i] = Math.random()*Math.PI*2
+				a2[i] = Math.random()*Math.PI*2
+			}
+            var temporizador = setTimeout("bucle()",1000)
+			function bucle(){
+				contexto.clearRect(0,0,anchura,altura)
+				for(var i = 0;i<numerocirculos;i++ ){
+					a1[i] += (Math.random()-0.5)*0.01
+					a2[i] += (Math.random()-0.5)*0.01
+					contexto.beginPath();
+					contexto.arc(centrox,centroy,i*paso,a1[i],a2[i],true)
+					contexto.stroke();
+				}
+				clearTimeout(temporizador)
+				temporizador = setTimeout("bucle()",1)
+			}
+            
+        </script>
+    
+    </body>
+</html>

@@ -1,0 +1,126 @@
+<html>
+    <head>
+        <style>
+            html,body{padding:0px;margin:0px;overflow:hidden;background:white;}
+            canvas{position:absolute;top:0px;left:0px;}
+        </style>
+    </head>
+    <body>
+        <canvas id="lienzo" width=512 height=512></canvas>
+        <canvas id="lienzo2" width=512 height=512></canvas>
+        <script>
+            var anchura = window.innerWidth;
+            var altura = window.innerHeight;
+            var dx = 0;
+            var dy = 0;
+            document.getElementById("lienzo").width = anchura;
+            document.getElementById("lienzo").height = altura;
+            document.getElementById("lienzo2").width = anchura;
+            document.getElementById("lienzo2").height = altura;
+            var tiempo = 0;
+            class Particula {
+                constructor(){
+                		
+                    this.x = Math.random()*anchura
+                    this.x2 = this.x;
+                    
+                    this.y = Math.random()*altura
+                    this.y2 = this.y;
+                    var angleRadians = Math.atan2(altura/2 - this.y, anchura/2 - this.x);
+                    this.vx = (Math.cos(angleRadians+Math.PI/2))*0.1
+                    this.vy = (Math.sin(angleRadians+Math.PI/2))*0.1
+                    this.r = Math.round(Math.random()*255)
+                    this.g = Math.round(Math.random()*255)
+                    this.b = Math.round(Math.random()*255)
+                    
+                    this.m = Math.random()*10
+                }
+            }
+            
+            var particulas = new Array();
+            var numeroparticulas = 100;
+            
+            for(var i = 0;i<numeroparticulas;i++){
+                particulas[i] = new Particula();
+            }
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            var contexto2 = document.getElementById("lienzo2").getContext("2d")
+            contexto.strokeStyle = "rgba(255,255,255,0.5)"
+            contexto.lineWidth = 3
+            var temporizador = setTimeout("bucle()",1000)
+            
+            function bucle(){
+            	//contexto2.clearRect(0,0,anchura,altura)
+            	dx = 0;
+            	dy = 0;
+            	
+                contexto.fillStyle = "rgba(255,255,255,0.01)"
+                contexto.fillRect(0,0,anchura,altura)
+                for(var i = 0;i<numeroparticulas;i++){
+                	
+                    particulas[i].x += particulas[i].vx
+                    particulas[i].y += particulas[i].vy
+                    for(var j = 0;j<numeroparticulas;j++){
+                        if( 
+                        	i != j
+                        	&&
+                        	(Math.abs(particulas[j].x - particulas[i].x) < 3500)
+                        	&&
+                        	(Math.abs(particulas[j].y - particulas[i].y) < 3500)
+                        	){
+                        var angleRadians = Math.atan2(particulas[j].y - particulas[i].y, particulas[j].x - particulas[i].x);
+                        var a = particulas[j].x - particulas[i].x;
+                        var b = particulas[j].y - particulas[i].y;
+
+                        var distancia = Math.sqrt( a*a + b*b );
+                        
+                        particulas[i].vx += (Math.cos(angleRadians)/distancia*0.002)*(particulas[j].m+1)
+	                        particulas[i].vy += (Math.sin(angleRadians)/distancia*0.002)*(particulas[j].m+1)
+	                       
+                        
+                    }
+                    }
+                   
+                    //console.log(dx+"-"+dy)
+                    //console.log(particulas[i].x+" - "+particulas[i].y)
+                    contexto2.fillStyle = "rgba("+particulas[i].r+","+particulas[i].g+","+particulas[i].b+",1)"
+                    //contexto2.fillRect(particulas[i].x-Math.round(particulas[i].m/4),particulas[i].y-Math.round(particulas[i].m/4),Math.round(particulas[i].m/2),Math.round(particulas[i].m/2))
+                    contexto.strokeStyle = "rgba("+particulas[i].r+","+particulas[i].g+","+particulas[i].b+",1)"
+                    contexto.lineWidth = particulas[i].m/1
+                    contexto.beginPath();
+                    contexto.moveTo(particulas[i].x+dx,particulas[i].y+dy)
+                    contexto.lineTo(particulas[i].x2+dx,particulas[i].y2+dy)
+                    contexto.stroke();
+                    contexto.closePath();
+                    particulas[i].x2 = particulas[i].x
+                    particulas[i].y2 = particulas[i].y
+                    if(particulas[i].x < 0-anchura*0.5 || particulas[i].x > anchura*1.5 || particulas[i].y < 0-altura*0.5 || particulas[i].y > altura*1.5){
+                    		particulas.splice(i,1);
+                    		numeroparticulas--;	
+                    }
+                    
+                }
+                tiempo++;
+                if(tiempo%100 == 0 && numeroparticulas < 1000){
+                	temp = numeroparticulas;
+                		particulas[numeroparticulas] = new Particula();
+                		numeroparticulas++;
+                		for(var k = 0;k<20;k++){
+	                		particulas[numeroparticulas] = new Particula();
+	                		randx = (Math.random()-0.5)*20
+	                		randy = (Math.random()-0.5)*20
+	                		particulas[numeroparticulas].x = particulas[temp].x + randx
+	                		particulas[numeroparticulas].y = particulas[temp].y + randy
+	                		particulas[numeroparticulas].x2 = particulas[temp].x + randx
+	                		particulas[numeroparticulas].y2 = particulas[temp].y + randy
+	                		numeroparticulas++;
+                		}
+                }
+                
+                //console.log("ok")
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",1)
+            }
+        </script>
+    </body>
+</html>

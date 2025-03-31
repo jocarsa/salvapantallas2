@@ -1,0 +1,75 @@
+<html>
+    <head>
+        <style>#lienzo{border:1px solid black;}body,html{margin:0px;padding:0px;overflow:hidden;background:black;}</style>
+        
+    </head>
+    <body>
+        <canvas width=1280px height=800px id="lienzo"></canvas>
+        <script src="jv3d.js"></script>
+        <script>
+            
+            
+            var cubos = new Array();
+            
+            
+            
+            for(var i = 0;i<400;i++){
+                var r = Math.round(Math.random()*255)
+                var g = Math.round(Math.random()*255)
+                var b = Math.round(Math.random()*255)
+                
+                var centrocubo = new V3d((Math.random()-0.5)*260,Math.random()*300+100,(Math.random()-0.5)*260)
+                
+                var puntos = [
+                    new V3d(centrocubo.x - 1,centrocubo.y,centrocubo.z - 1),
+                    new V3d(centrocubo.x - 1,centrocubo.y,centrocubo.z +1),
+                    new V3d(centrocubo.x +1,centrocubo.y,centrocubo.z + 1),
+                    new V3d(centrocubo.x + 1,centrocubo.y,centrocubo.z - 1)
+                    ]
+                
+                cubos[i] = new Caja(centrocubo,{x:0.3,y:3,z:0.3},'rgba('+r+','+g+','+b+',1)');
+                cubos[i].zsort = Math.sqrt(Math.pow(centrocubo.x,2)+Math.pow(centrocubo.y,2)+Math.pow(centrocubo.z,2))
+            }
+            
+            
+            
+            
+            
+            var objetos = cubos;
+            
+            
+            representacion(objetos,contexto,centrox,centroy);
+            var temporizador = setTimeout("bucle()",1000)
+            function bucle(){
+            		for(var i = 0;i<cubos.length;i++){
+            			for(var j = 0;j<cubos[i].vertices.length;j++){
+            				/*
+	            			cubos[i].vertices[j].x += (Math.random()-0.5)*0.1
+	            			cubos[i].vertices[j].y += (Math.random()-0.5)*0.1
+	            			cubos[i].vertices[j].z += (Math.random()-0.5)*0.1
+	            			*/
+	            			cubos[i].vertices[j].y -= 4
+            			}
+            		}
+            		
+            		objetos = cubos
+            		representacion(objetos,contexto,centrox,centroy);
+            		clearTimeout(temporizador)
+            		temporizador = setTimeout("bucle()",30)
+            	
+            }
+            
+                    </script>
+    </body>
+</html>
+
+
+
+
+
+
+
+
+
+
+

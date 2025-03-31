@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+  </head>
+  <body>
+    <a-scene background="color: #000">
+	
+		<a-assets>
+			<!-- Load the cabin model -->
+			<a-asset-item id="cabin-model" src="cabina.glb"></a-asset-item>
+		  </a-assets>
+      <a-entity id="starContainer"></a-entity>
+	  <!--<a-entity
+        gltf-model="#cabin-model"
+        position="0 0 0"
+        scale="1 1 1"
+		material="color: #000" 
+      ></a-entity>-->
+      <a-camera position="0 0 0"></a-camera>
+    </a-scene>
+
+    <script>
+      const starContainer = document.getElementById("starContainer");
+
+      function createStar() {
+        for (let i = 0; i < 20; i++) {
+          const starEntity = document.createElement("a-box");
+          starEntity.setAttribute("color", "#fff"); // White color
+          starEntity.setAttribute("scale", "0.1 0.1 1");
+
+          const xPosition = (Math.random() - 0.5) * 200;
+          const yPosition = (Math.random() - 0.5) * 200;
+          starEntity.setAttribute("position", `${xPosition} ${yPosition} -50`);
+
+          starEntity.setAttribute("animation", {
+            property: "position",
+            dur: 3000,
+            to: `${xPosition} ${yPosition} 0`,
+            loop: "once",
+          });
+
+          
+
+          starEntity.addEventListener("animationcomplete", () => {
+            console.log("Animation complete");
+            if (starContainer.contains(starEntity)) {
+              starContainer.removeChild(starEntity);
+            }
+          });
+
+          starContainer.appendChild(starEntity);
+        }
+
+        // Remove stars that have completed their animation
+        const stars = starContainer.querySelectorAll("a-box");
+        stars.forEach((star) => {
+          star.addEventListener("animationcomplete", () => {
+            if (starContainer.contains(star)) {
+              starContainer.removeChild(star);
+            }
+          });
+        });
+      }
+
+      const interval = 1; // Change interval to 1000 ms (1 second)
+      setInterval(createStar, interval);
+    </script>
+  </body>
+</html>

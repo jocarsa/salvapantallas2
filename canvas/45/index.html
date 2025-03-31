@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        html,body{padding:0px;margin:0px;overflow:hidden;background:black;}
+        canvas{position:absolute;top:0px;left:0px;}
+    </style>
+</head>
+<body>
+    <canvas id="lienzo" width=512 height=512></canvas>
+    
+    <script>
+        var anchura = window.innerWidth;
+        var altura = window.innerHeight;
+        var dx = 0;
+        var dy = 0;
+        document.getElementById("lienzo").width = anchura;
+        document.getElementById("lienzo").height = altura;
+
+        var tiempo = 0;
+        var numeroparticulas = 1000000; 
+        var particulas = [];
+        for(var i = 0; i < numeroparticulas; i++) {
+            particulas.push(new Particula());
+        }
+
+        var contexto = document.getElementById("lienzo").getContext("2d");
+        contexto.fillStyle = "rgb(42,42,42)";
+        contexto.fillRect(0,0,anchura,altura);
+
+        var imagen = contexto.getImageData(0,0,anchura,altura);
+        contexto.strokeStyle = "rgba(255,255,255,0.5)";
+        contexto.lineWidth = 1;
+
+        var numWorkers = navigator.hardwareConcurrency || 4; // Default to 4 workers
+        var workers = [];
+        var workerResults = [];
+        var workerFinishedCount = 0;
+
+        // Initialize workers
+        for (var i = 0; i < numWorkers; i++) {
+            var worker = new Worker('worker.js'); // Path to worker script
+            workers.push(worker);
+
+            worker.onmessage = function(event) {
+                workerFinishedCount++;
+                workerResults.push(event.data);
+
+                if (workerFinishedCount === numWorkers) {
+                    // All workers have finished
+                    // Merge results and update canvas
+                    updateCanvas();
+                    resetWorkers();
+                }
+            };
+        }
+
+        // Divide particles among workers
+        var particlesPerWorker = Math.ceil(numeroparticulas / numWorkers);
+        for (var i = 0; i < numWorkers; i++) {
+            var start = i * particlesPerWorker;
+            var end = Math.min((i + 1) * particlesPerWorker, numeroparticulas);
+            var chunk = particulas.slice(start, end);
+            workers[i].postMessage({ particles: chunk });
+        }
+
+        function resetWorkers() {
+            workerFinishedCount = 0;
+            workerResults = [];
+        }
+
+        function updateCanvas() {
+            // Merge results from all workers and update canvas
+            // Implement your canvas update logic here using workerResults
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+	<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+		<style>
+		@font-face {
+  font-family: hiragana;
+  src: url(hiragana.ttf);
+}
+		body{
+		background:black;
+		overflow:hidden;
+		font-family:serif !important;
+
+		}
+			body,html,#contenedor,.capa,#contenedor{
+				width:100%;
+				height:100%;
+				
+				
+			}
+			#contenedor{
+				position:relative;
+				transform: perspective(400px);
+				animation:rota 100s;
+				animation-interpolation-function:linear;
+				animation-iteration-count:infinite;
+			}
+			.b1234{
+				width:100%;
+				height:100%;
+				transform:perspective(400px) translateZ(10px);
+				position:absolute;
+				top:0px;
+				left:0px;
+				color:rgba(0,0,0,0);
+				
+				
+				
+			}
+
+			.unaletra{
+			font-family:arial;
+			/*-webkit-text-stroke-width: 4px;
+			-webkit-text-stroke-color: white;*/
+			font-size:400px;
+text-shadow:0px 0px 15px 15px white;
+animation:aparece 5s;
+opacity:0.8;
+
+			}
+			@keyframes avanza{
+				0%{transform:perspective(400px) translateZ(-10000px);opacity:1;}
+				90%{opacity:1;} 
+				100%{transform:perspective(400px) translateZ(1000px);opacity:1;}
+			}
+			@keyframes rota{
+				0%{transform:rotate(0deg);}
+				
+				100%{transform:rotate(360deg);}
+			}
+@keyframes aparece{
+				0%{opacity:0;}
+				
+				100%{opacity:0.8;}
+			}
+		#lienzo{
+			
+			
+		position:absolute;
+		top:50%;
+		left:0px;
+		z-index:-100000000000000;
+		margin-top:-50%;
+		transform:scale(1.5);
+		}
+		.sol{
+		width:1500px;}
+		</style>
+		<script src="https://code.jquery.com/jquery-3.7.0.js" integrity="sha256-JlqSTELeR4TLqP0OG9dxM7yDPqX1ox/HfgiSLBj8+kM=" crossorigin="anonymous"></script>
+	</head>
+	<body>
+		<div id="contenedor">
+			<canvas id="lienzo"></canvas>
+		</div>
+		<script>
+
+var letras = "abcdefghijklmnopqrstuvwxyz1234567890"
+
+letras = "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ゚゛゜ゝゞゟ゠ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶヷ"
+letras = "a"
+var anchura = window.innerWidth
+var altura = window.innerHeight
+document.getElementById("lienzo").width = anchura
+document.getElementById("lienzo").height = anchura
+var contexto = document.getElementById("lienzo").getContext("2d")
+contexto.fillStyle = "white"
+for(var i = 0;i<10000;i++){
+	var ancho = Math.random()*1
+	contexto.fillRect(Math.random()*anchura,Math.random()*anchura,ancho,ancho) 
+}
+for(var i = 0;i<15;i++){
+	x = Math.random()*anchura
+	y = Math.random()*anchura
+for(var j = 0;j<5500;j++){
+	var ancho = Math.random()*1
+var angulo = Math.random()*Math.PI*2
+		contexto.fillRect(
+			x+Math.cos(angulo)*(Math.random()-0.5)*1300,
+			y+Math.sin(angulo)*(Math.random()-0.5)*1300,
+			ancho,
+			ancho) 
+		}
+}
+
+			var temporizador = setTimeout("bucle()",1000)
+			var r = Math.round(Math.random()*255)
+			var g = Math.round(Math.random()*255)
+			var b = Math.round(Math.random()*255)
+			function bucle(){
+			
+				//var nuevocontenido = $('<div id="b1234" class="capa b1234" style="text-shadow:0px 0px 250px 250px rgb('+r+','+g+','+b+',0.5);animation:avanza 10s;animation-timing-function:linear;"><div class="unaletra" style="position:absolute;top:'+((Math.random()* 3 - 1)*window.innerWidth)+'px;left:'+((Math.random()* 3 - 1)*window.innerWidth)+'px;text-stroke: 2px white;transform:rotate('+Math.round(Math.random()*360)+'deg);color:white"><img class="sol" src="sol.png"></div></div>')
+				var nuevocontenido = $('<div id="b1234" class="capa b1234" style="text-shadow:0px 0px 250px 250px rgb('+r+','+g+','+b+',0.5);animation:avanza 10s;animation-timing-function:linear;"><div class="unaletra" style="position:absolute;top:'+((Math.random()* 3 - 1)*window.innerWidth)+'px;left:'+((Math.random()* 3 - 1)*window.innerWidth)+'px;text-stroke: 2px white;transform:rotate('+Math.round(Math.random()*360)+'deg);color:rgb('+r+','+g+','+b+',0.9);">❤</div></div>')
+				
+				
+				$("#contenedor").prepend(nuevocontenido)
+				//'+letras[Math.floor(Math.random()*letras.length)]+'
+				
+				
+				var appendedElement = $("#contenedor > .capa:first-child");
+				
+				appendedElement.delay(10000).queue(function (next) {
+    $(this).remove();
+    next();
+});
+
+				clearTimeout(temporizador)
+				temporizador = setTimeout("bucle()",0)
+			}
+		</script>
+	</body>
+</html>

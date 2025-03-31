@@ -1,0 +1,69 @@
+<html>
+    <head>
+        <style>
+            html,body{padding:0px;margin:0px;overflow:hidden;background:white;}
+            canvas{position:absolute;top:0px;left:0px;}
+        </style>
+    </head>
+    <body>
+        <canvas id="lienzo" width=512 height=512></canvas>
+        <canvas id="lienzo2" width=512 height=512></canvas>
+        <script>
+            var anchura = window.innerWidth;
+            var altura = window.innerHeight;
+            var dx = 0;
+            var dy = 0;
+            document.getElementById("lienzo").width = anchura;
+            document.getElementById("lienzo").height = altura;
+           
+            var tiempo = 0;
+            class Particula {
+                constructor(){               		
+                    this.x = 0
+                    this.y = 0  
+                     this.z = (Math.random()-0.5)*5 
+                }
+            }
+            var distancia = 3;
+            var particulas = new Array();
+            var numeroparticulas = 10000;
+            
+            
+            var i = 0;
+            for(var x = 0;x<100;x++){
+            		for(var y = 0;y<100;y++){
+            			particulas[i] = new Particula();
+            			particulas[i].x = x
+            			particulas[i].y = y
+            			i++;
+           		 }
+            }
+            
+            
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            
+            contexto.strokeStyle = "rgba(255,255,255,0.5)"
+            contexto.lineWidth = 3
+            var temporizador = setTimeout("bucle()",1000)
+            
+            function bucle(){
+            	contexto.clearRect(0,0,anchura,altura)
+            	
+            	
+            	
+            	for(var i = 0;i<numeroparticulas;i++){
+            		if(i>0){
+            		particulas[i].z = particulas[i-1].z+(Math.random()-0.5)*0.01
+            		}
+            		pospantallax = (particulas[i].x*distancia / 2 - particulas[i].y*distancia / 2);
+        			pospantallay = (particulas[i].x*distancia / 4 + particulas[i].y*distancia / 4)+particulas[i].z;
+                contexto.fillRect(pospantallax*5+anchura/2,pospantallay*5+100,2,2)
+            }
+            		
+                //console.log("ok")
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",300)
+            }
+        </script>
+    </body>
+</html>

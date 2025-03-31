@@ -1,0 +1,60 @@
+/*
+Esto es un comentario
+*/
+/*
+
+selector{
+    propiedad:valor;
+    propiedad:valor;
+    propiedad:valor;
+    ...
+}
+
+*/
+
+p{
+    color:rgb(30,30,30);
+}
+h1,h2,h3,h4,h5,h6,p,ul,li{
+    color:rgb(30,30,30);
+    margin:0px;
+    padding:0px;
+}
+/* 
+    palabra suelta -> etiqueta
+    almohadilla -> id
+    punto -> clase
+*/
+header,main,footer{
+
+    width:800px;
+    margin:auto;
+    background:rgb(240,240,240);
+    margin-top:0px;
+    margin-bottom:0px;
+    padding:20px;
+}
+
+body{
+    background:rgb(200,200,200);
+}
+#imagenlogo{
+    float:left;
+    margin-right:20px;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

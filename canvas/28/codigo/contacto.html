@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="es">
+    <head>
+        <!-- Lo que esta en el head va al navegador y no lo ve el usuario -->
+        <title>Curso de aplicaciones Web</title>
+        <meta charset="utf-8">
+        <meta name="description" content="JOCARSA - Jose Vicente Carratalá - Proyectos, consultoría y formación acerca de Inteligencia Artificial, Big Data y Data Science">
+        <link rel="StyleSheet" href="estilo.css">
+    </head>
+    <body>
+        <!-- Lo que está en el body si que lo va a ver el usuario en la web -->
+        <header>
+            <!-- Aquí voy a poner la cabecera de mi web -->
+            <img src="img/josevicente.jpg" style="width:100px;">
+            <h1>Jose Vicente Carratalá</h1>
+            <h2>Desarrollador, diseñador y formador</h2>
+            <nav>
+                <ul>
+                    <li><a href="index.html">Inicio</a></li>
+                    <li><a href="blog.html">Blog</a></li>
+                    <li><a href="cursos.html">Cursos</a></li>
+                    <li><a href="sobremi.html">Sobre Mi</a></li>
+                    <li><a href="servicios.html">Servicios</a></li>
+                    <li><a href="descargas.html">Descargas</a></li>
+                    <li><a href="contacto.html">Contacto</a></li>
+                </ul>
+            </nav>
+        </header>
+        <main>
+            <!-- Aquí voy a poner el contenido principal de mi web -->
+            <section id="contacto">
+                Aquí voy a poner el contenido del formulario de contacto
+                <form>
+                    <input type="text" name="nombre" placeholder="Introduce tu nombre">
+                    <br>
+                    <input type="email" name="email" placeholder="Introduce tu email">
+                    <br>
+                    <select name="poblacion">
+                        <option value="valencia">Introduce tu población</option>
+                        <option value="valencia">Valencia</option>
+                        <option value="valencia">Madrid</option>
+                        <option value="valencia">Barcelona</option>
+                    </select>
+                    <br>
+                    <p>Indica qué eres?</p>
+                    <input type="radio" name="tipo">Persona<br>
+                    <input type="radio" name="tipo">Animal<br>
+                    <input type="radio" name="tipo">Robot<br>
+                    <br>
+                    <p>Indica que dia de la semana es hoy?</p>
+                    <input type="radio" name="dia">Lunes<br>
+                    <input type="radio" name="dia">Martes<br>
+                    <input type="radio" name="dia">Miercoles<br>
+                    <input type="radio" name="dia">Jueves<br>
+                    <input type="radio" name="dia">Viernes<br>
+                    <br>
+                    <p>Indica el motivo de tu consulta</p>
+                    <input type="checkbox" name="motivo">Personal<br>
+                    <input type="checkbox" name="motivo">Formativa<br>
+                    <input type="checkbox" name="motivo">Laboral<br>
+                    <br>
+                    <input type="submit" value="Envia tu correo!">
+                </form>
+            </section>
+        </main>
+        <footer>
+            <!-- Aquí voy a poner el pié de página de mi web --> 
+            <h4>(c)2020 Jose Vicente Carratalá</h4>
+        </footer> 
+    </body>
+</html>

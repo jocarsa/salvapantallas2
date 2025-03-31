@@ -1,0 +1,185 @@
+<html>
+    <head>
+        <style>
+            html,body{padding:0px;margin:0px;overflow:hidden;background:black;}
+            canvas{
+			position:absolute;top:0px;left:0px;image-rendering: pixelated;
+			
+			}
+			#lienzo2{mix-blend-mode:lighten}
+        </style>
+    </head>
+    <body>
+        <canvas id="lienzo" width=512 height=512></canvas>
+        <canvas id="lienzo2" width=512 height=512></canvas>
+        <script src="funciones.js"></script>
+        <script src="Particula.js"></script>
+        <script>
+            var anchura = window.innerWidth;
+            var altura = window.innerHeight;
+            var dx = 0;
+            var dy = 0;
+            document.getElementById("lienzo").width = anchura;
+            document.getElementById("lienzo").height = altura;
+			 document.getElementById("lienzo2").width = anchura;
+            document.getElementById("lienzo2").height = altura;
+            
+            var tiempo = 0;
+            
+            var particulas = new Array();
+            var numeroparticulas = 1000; 
+            
+           	
+             
+             
+            // Creación inicial de partículas
+            
+            for(var i = 0;i<numeroparticulas;i++){
+                particulas[i] = new Particula();
+            }
+            
+            // Creación inicial de partículas
+            
+            
+            var contexto = document.getElementById("lienzo").getContext("2d", { willReadFrequently: true })
+				var contexto2 = document.getElementById("lienzo2").getContext("2d", { willReadFrequently: true })
+             contexto.fillStyle = "rgb(42,42,42)"
+            contexto.fillRect(0,0,anchura,altura)
+            var imagen = contexto.getImageData(0,0,anchura,altura)
+            contexto.strokeStyle = "rgba(255,255,255,0.5)"
+            contexto.lineWidth = 1
+            var temporizador = setTimeout("bucle()",1000)
+            contexto.fillStyle = "rgba(0,0,0,0.01)"
+            
+            
+			imagen = contexto.getImageData(0,0,anchura,altura)
+			
+            function bucle(){
+				
+            	
+            	
+                
+					// Le quitamos un poco de alfa a la imagen
+               for(var p = 0;p<imagen.data.length;p+=4){imagen.data[p+3] -= 1;}
+               // Relleno semitransparente
+					contexto2.fillStyle = "rgba(0,0,0,0.1)";
+					contexto2.fillRect(0,0,anchura,altura)
+                for(var i = 0;i<numeroparticulas;i++){
+					
+					var anchuraparticula = Math.round(particulas[i].m/10);
+                    particulas[i].x += particulas[i].vx/1250
+                    particulas[i].y += particulas[i].vy/1250
+                    for(var j = 0;j<numeroparticulas;j++){
+                        if( 
+                        	i != j
+                        	&&
+                        	(Math.abs(particulas[j].x - particulas[i].x) < 200)
+                        	&&
+                        	(Math.abs(particulas[j].y - particulas[i].y) < 200)
+                        	){
+							
+							nuevavelocidad = calculaVelocidad(
+								particulas[i].x,
+								particulas[i].y,
+								particulas[j].x,
+								particulas[j].y,
+								particulas[i].vx,
+								particulas[i].vy,
+								particulas[i].m,
+								particulas[j].m
+							)
+	                       particulas[i].vx = nuevavelocidad[0]
+							particulas[i].vy = nuevavelocidad[1]
+							if(particulas[i].vx > 1){particulas[i].vx/2}
+							if(particulas[i].vx < -1){particulas[i].vx/2}
+							if(particulas[i].vy > 1){particulas[i].vy/2}
+							if(particulas[i].vy < -1){particulas[i].vy/2}
+                        
+						}
+						
+						
+						// Colision
+						if(
+							Math.abs(particulas[i].x - particulas[j].x) < 1
+							&&
+							Math.abs(particulas[i].y - particulas[j].y) < 1
+							&&
+							i != j
+						){
+						if(
+							particulas[i].vx < 5 &&
+							particulas[i].vy < 5 &&
+							particulas[j].vx < 5 &&
+							particulas[j].vy < 5 
+						){
+							particulas[i].m += particulas[j].m
+							particulas.splice(j,1)
+						}else{
+							tempvix = particulas[i].vx
+							tempviy = particulas[i].vy
+							tempvjx = particulas[j].vx
+							tempvjy = particulas[j].vy
+							particulas[i].vx = tempvjx/1.1
+							particulas[i].vy = tempvjy/1.1
+							particulas[j].vx = tempvix/1.1
+							particulas[j].vy = tempviy/1.1
+						}
+							
+						}
+                }
+                   
+                    
+                   
+					x = 1
+					y = 1
+					
+                  imagen.data[(Math.round(particulas[i].y)*4*anchura*1+Math.round(particulas[i].x)*4+0)+x*4+y*anchura*4] = particulas[i].r
+	               imagen.data[(Math.round(particulas[i].y)*4*anchura*1+Math.round(particulas[i].x)*4+1)+x*4+y*anchura*4] = particulas[i].g
+	               imagen.data[(Math.round(particulas[i].y)*4*anchura*1+Math.round(particulas[i].x)*4+2)+x*4+y*anchura*4] = particulas[i].b
+	               imagen.data[(Math.round(particulas[i].y)*4*anchura*1+Math.round(particulas[i].x)*4+3)+x*4+y*anchura*4] = 255
+					   contexto2.fillStyle = "rgb("+particulas[i].r+","+particulas[i].g+","+particulas[i].b+")";
+					   contexto2.beginPath()
+					   contexto2.arc(particulas[i].x,particulas[i].y,particulas[i].m/40,0,Math.PI*2,true)
+					   contexto2.fill()
+                   	
+				
+                   
+                   
+                  
+                    particulas[i].x2 = particulas[i].x
+                    particulas[i].y2 = particulas[i].y
+				
+					
+					
+					
+					
+					
+                }
+                
+				
+                contexto.putImageData(imagen,0,0)
+                
+		         // Si una particula se sale de la pantalla, la quitamos y creamos una nueva    
+					for(var i = 0;i<numeroparticulas;i++){
+						if(
+						particulas[i].y < 0 
+						|| particulas[i].y > altura
+						|| particulas[i].x < 0 
+						|| particulas[i].x > anchura
+						){
+							particulas.splice(i,1)
+							numeroparticulas--;
+							console.log("uy")
+							particulas.push(new Particula())
+							numeroparticulas++;
+							particulas[numeroparticulas-1].vx = (Math.random()-0.5)*1000
+							particulas[numeroparticulas-1].vy = (Math.random()-0.5)*1000
+						}
+					}
+               
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",0)
+            }
+        </script>
+    </body>
+</html>

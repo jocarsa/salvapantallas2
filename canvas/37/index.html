@@ -1,0 +1,150 @@
+<html>
+	<head>
+		<style>
+		body{padding:0px;margin:0px;overflow:hidden;background:black;transform:scale(1,-1)}
+		canvas{position:absolute;top:0px;left:0px;}
+		#lienzo2{/*filter:blur(2px) brightness(8.5) contrast(4.5);mix-blend-mode: screen;*/display:none;}
+		</style>
+		
+	</head>
+	<body>
+		<canvas id="lienzo" width="1920" height="1080"></canvas>
+		<canvas id="lienzo2" width="1920" height="1080"></canvas>
+		<script>
+		var anchura = 1920
+		var altura = 1080
+			gravedad = 0.5;
+			class Particula{
+				constructor(x,y,velocidad,angulo,generacion,drag,r,g,b){
+					this.x = x
+					this.y = y
+					this.vx = Math.cos(angulo)*velocidad
+					this.vy = Math.sin(angulo)*velocidad
+					this.edad = 0
+					this.generacion = generacion
+					this.drag = drag
+					this.r = r
+					this.g = g
+					this.b = b
+					this.a = 1
+					this.micolor = 0
+					this.xanterior = 0
+					this.yanterior = 0
+					this.tamanio = Math.random()*3+1
+				}
+				mueve(){
+					this.edad++;
+					this.vy -= gravedad
+					this.x += this.vx*this.drag
+					this.y += this.vy*this.drag
+					if(this.xanterior != 0){
+					this.pinta()
+					}
+					if(this.edad%1 == 0 && this.generacion == 2){
+					particulas.push(new Particula(
+								this.x,
+								this.y,
+								0,
+								0,
+								3,
+								0.02,
+								this.r+Math.round((Math.random()-0.5)*40),
+								this.g+Math.round((Math.random()-0.5)*40),
+								this.b+Math.round((Math.random()-0.5)*40)
+								))
+							}
+					this.xanterior = this.x
+					this.yanterior = this.y
+				}
+				pinta(){
+					this.a -= this.edad/1000;
+					this.micolor = "rgba("+this.r+","+this.g+","+this.b+","+this.a+")"
+					/*
+					//micolor = "white"
+					contexto.shadowColor = this.micolor
+					contexto.fillStyle = this.micolor
+					contexto.strokeStyle = this.micolor
+					contexto.lineWidth = 3*/
+					//console.log("hola")
+					//contexto.fillRect(this.x,altura-this.y,this.tamanio,this.tamanio)
+					/*
+					contexto.beginPath()
+					//console.log(this.xanterior)
+					contexto.moveTo(this.xanterior,altura-this.yanterior)
+					contexto.lineTo(this.x,altura-this.y)
+					contexto.closePath()
+					contexto.stroke()
+					*/
+					
+				}
+			}
+			var particulas = new Array()
+			
+			var contexto = document.getElementById("lienzo").getContext("2d")
+			var contexto2 = document.getElementById("lienzo2").getContext("2d")
+			contexto.willReadFrequently = true
+			contexto.fillStyle = "white"
+			
+			
+			var temporizador = setTimeout("bucle()",1000)
+			var tiempo  =0
+			function bucle(){
+				//console.log(particulas.length)
+				tiempo++;
+				//contexto.clearRect(0,0,1920,1080)
+				contexto.fillStyle = "rgba(0,0,0,0.1)"
+				contexto.fillRect(0,0,anchura,altura)
+				contexto2.fillStyle = "rgba(0,0,0,0.1)"
+				contexto2.fillRect(0,0,anchura,altura)
+				for(var i = 0;i<particulas.length;i++){
+					particulas[i].mueve();
+					}
+				
+				
+				if(tiempo %5 == 0){
+					particulas.push(new Particula(Math.random()*anchura,0,Math.random()*20+20,Math.PI/2,1,1,Math.round(Math.random()*255),Math.round(Math.random()*255),Math.round(Math.random()*255)))
+				}
+				
+				for(var i = 0;i<particulas.length;i++){
+					if(particulas[i].edad == 40 && particulas[i].generacion == 1){
+						
+						for(var j = 0;j<100;j++){
+							particulas.push(new Particula(
+								particulas[i].x,
+								particulas[i].y,
+								(Math.random())*50-particulas[i].vy,
+								(Math.random())*Math.PI*2,
+								2,
+								0.1,
+								particulas[i].r+Math.round((Math.random()-0.5)*40),
+								particulas[i].g+Math.round((Math.random()-0.5)*40),
+								particulas[i].b+Math.round((Math.random()-0.5)*40)
+								))
+						}
+						particulas.splice(i,1)
+					}
+				}
+				for(var i = 0;i<particulas.length;i++){
+					if(particulas[i].edad > 40 && particulas[i].generacion > 1){
+						particulas.splice(i,1)
+					}
+				}
+				var datos = contexto.getImageData(0,0,1920,1080)
+				for(var i = 0;i<particulas.length;i++){
+					//console.log(Math.round(particulas[i].y*particulas[i].x)*4+Math.round(particulas[i].x)*4)
+					datos.data[Math.round(particulas[i].y)*1920*4+Math.round(particulas[i].x)*4] = particulas[i].r
+					datos.data[Math.round(particulas[i].y)*1920*4+Math.round(particulas[i].x)*4+1] = particulas[i].g
+					datos.data[Math.round(particulas[i].y)*1920*4+Math.round(particulas[i].x)*4+2] = particulas[i].b
+					datos.data[Math.round(particulas[i].y)*1920*4+Math.round(particulas[i].x)*4+3] = 255
+				}
+				//console.log(datos)
+				contexto.putImageData(datos,0,0)
+				contexto2.putImageData(datos,0,0)
+				
+				clearTimeout(temporizador)
+				temporizador = setTimeout("bucle()",30)
+			}
+			
+		</script>
+	</body>
+</html>

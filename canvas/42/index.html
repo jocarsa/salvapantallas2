@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+	<head>
+		<script src="https://code.jquery.com/jquery-3.7.1.js" integrity="sha256-eKhayi8LEQwp4NKxN+CfCh+3qOVUtJn3QNZ0TciWLP4=" crossorigin="anonymous"></script>
+		<style>
+			.celula{
+				width:50px;
+				height:50px;
+				background:grey;
+				border-radius:50px;
+				position:absolute;
+				transition:all 5s;
+			}
+			body{
+				background:white;
+overflow:hidden;
+			}
+		</style>
+	</head>
+	<body>
+		<script>
+			$(document).ready(function(){
+				for(var i = 0; i < 1000; i++){
+					var cell = $("<div class='celula'></div>").appendTo("body");
+					cell.css({
+						top: Math.random() * window.innerHeight + "px",
+						left: Math.random() * window.innerWidth + "px"
+					});
+					runCellLoop(cell);
+				}
+			})
+			
+			function runCellLoop(cell){
+				function loop(){
+					var pos = cell.position();
+					cell.css({
+						top: (pos.top + (Math.random() - 0.5) * 100) + "px",
+						left: (pos.left + (Math.random() - 0.5) * 100) + "px",
+						background: "rgb("+Math.round(Math.random()*255)+","+Math.round(Math.random()*255)+","+Math.round(Math.random()*255)+",0.5)"
+					});
+					setTimeout(loop, Math.random()*5000);
+				}
+				loop();
+			}
+		</script>
+	</body>
+</html>

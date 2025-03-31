@@ -1,0 +1,181 @@
+<html>
+    <head>
+        <style>
+            body,html{
+                overflow:hidden;
+                margin:0px;
+                padding:0px;
+                
+            }
+        </style>
+    </head>
+    <body>
+    
+        <canvas id="lienzo" width=512 height=512></canvas>
+        <script>
+		
+			
+        function gaussianBlur(imgData, width, height, radius) {
+            const pixels = imgData.data;
+            const blurredData = new Uint8ClampedArray(pixels);
+
+            const gaussKernel = createGaussKernel(radius);
+            const halfKernelSize = Math.floor(gaussKernel.length / 2);
+
+            // Apply horizontal Gaussian blur
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    applyBlur(pixels, blurredData, width, height, x, y, gaussKernel, halfKernelSize, true);
+                }
+            }
+
+            // Apply vertical Gaussian blur
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    applyBlur(blurredData, pixels, width, height, x, y, gaussKernel, halfKernelSize, false);
+                }
+            }
+
+            return new ImageData(pixels, width, height);
+        }
+
+        function createGaussKernel(radius) {
+            const sigma = radius / 3;
+            const size = 2 * Math.ceil(sigma * 2.57) + 1; // calculate the kernel size
+            const kernel = new Float32Array(size);
+            const center = Math.floor(size / 2);
+            let sum = 0;
+
+            for (let i = 0; i < size; i++) {
+                const x = i - center;
+                kernel[i] = Math.exp(-(x * x) / (2 * sigma * sigma)) / (Math.sqrt(2 * Math.PI) * sigma);
+                sum += kernel[i];
+            }
+
+            // Normalize the kernel
+            for (let i = 0; i < size; i++) {
+                kernel[i] /= sum;
+            }
+
+            return kernel;
+        }
+
+        function applyBlur(src, dst, width, height, x, y, kernel, halfKernelSize, isHorizontal) {
+            const rgba = [0, 0, 0, 0];
+            const centerIndex = (y * width + x) * 4;
+
+            for (let k = -halfKernelSize; k <= halfKernelSize; k++) {
+                const offset = isHorizontal ? k : k * width;
+                const srcIndex = centerIndex + offset * 4;
+
+                if (srcIndex >= 0 && srcIndex < src.length) {
+                    const weight = kernel[halfKernelSize + k];
+                    rgba[0] += src[srcIndex] * weight;
+                    rgba[1] += src[srcIndex + 1] * weight;
+                    rgba[2] += src[srcIndex + 2] * weight;
+                    rgba[3] += src[srcIndex + 3] * weight;
+                }
+            }
+
+            dst[centerIndex] = rgba[0];
+            dst[centerIndex + 1] = rgba[1];
+            dst[centerIndex + 2] = rgba[2];
+            dst[centerIndex + 3] = rgba[3];
+        }
+		
+            var anchura = window.innerWidth;
+            var altura = window.innerHeight;
+            
+            document.getElementById("lienzo").width = anchura;
+            document.getElementById("lienzo").height = altura;
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            var numerocirculos = 154;
+            
+            var circulos = new Array();
+            
+            class Circulo {
+                constructor() {
+                    this.x = Math.random()*anchura; 
+                    this.y = Math.random()*altura; 
+                    this.direccion = Math.random()*Math.PI*2;
+                    this.r = Math.round(Math.random()*255)
+                    this.g = Math.round(Math.random()*255)
+                    this.b = Math.round(Math.random()*255)
+                    this.a = 0.5
+                }
+                
+                }
+            for(var i = 0;i<numerocirculos;i++){
+                circulos[i] = new Circulo();
+            }
+            
+            var temporizador = setTimeout("bucle()",1000)
+            
+            function bucle(){
+				var cuentablur = 0
+                contexto.fillStyle = "rgba(255,255,255,0.1)"
+                contexto.fillRect(0,0,anchura,altura);
+                // Variamos la velocidad
+                for(var i = 0;i<numerocirculos;i++){  
+					if(i%50 == 0){
+						cuentablur++
+						//contexto.putImageData(gaussianBlur(contexto.getImageData(0,0,anchura,altura), anchura, altura, cuentablur*0),0,0)
+					}
+                    circulos[i].direccion += (Math.random()-0.5)*0.1
+                    circulos[i].x += Math.cos(circulos[i].direccion)
+                    circulos[i].y += Math.sin(circulos[i].direccion)      
+                    
+                    if(circulos[i].x > anchura || circulos[i].x < 0 || circulos[i].y > altura || circulos[i].y <0 ){
+                        circulos[i].direccion += Math.PI;
+                    }
+                     for(var j = 0;j<numerocirculos;j++){ 
+                        if(
+                            Math.abs(circulos[i].x - circulos[j].x) < 109
+                            &&
+                            Math.abs(circulos[i].y - circulos[j].y) < 109
+                            &&
+                            i != j
+                        ){
+                            var a = circulos[i].x - circulos[j].x;
+                            var b = circulos[i].y - circulos[j].y;
+
+                            var c = Math.sqrt( a*a + b*b );
+                            if(c < 10 ){
+                                var angleRadians = Math.atan2(circulos[j].y - circulos[i].y, circulos[j].x - circulos[i].x);
+                                /*circulos[i].direccion = 0-angleRadians
+                                circulos[j].direccion = angleRadians*/
+                                 circulos[i].direccion += Math.PI
+                                circulos[j].direccion += Math.PI
+                                circulos[i].x += Math.cos(circulos[i].direccion)*2
+                                circulos[i].y += Math.sin(circulos[i].direccion)*2
+                            }
+                            if(c < 50 ){
+                               contexto.beginPath();
+                                contexto.moveTo( circulos[i].x, circulos[i].y)
+                                contexto.lineTo( circulos[j].x, circulos[j].y)
+                                contexto.stroke();
+                            }
+                        }
+                     }
+                }
+                // Pintamos fuera
+				var cuentablur = 0
+                for(var i = 0;i<numerocirculos;i++){
+					if(i%50 == 0){
+						cuentablur++
+						contexto.putImageData(gaussianBlur(contexto.getImageData(0,0,anchura,altura), anchura, altura, cuentablur*1),0,0)
+					}
+                    contexto.fillStyle = "rgb(0,0,0)"
+                    contexto.beginPath();
+                    contexto.arc(circulos[i].x,circulos[i].y,5,0,Math.PI*2,true);
+                    contexto.fill();  
+                }
+				
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",30)
+            }
+            
+        </script>
+    
+    </body>
+</html>

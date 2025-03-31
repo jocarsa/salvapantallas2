@@ -1,0 +1,77 @@
+<html>
+    <head>
+        <style>head,body{padding:0px;margin:0px;overflow:hidden;background:black;</style>
+    </head>
+    <body>
+        <canvas id="lienzo"></canvas>
+        <script>
+            class Particula{
+                constructor(){
+                    this.x = Math.random()*anchura
+                    this.y = Math.random()*altura
+                    this.a = Math.random()*Math.PI*2
+                    this.r = Math.round(Math.random()*255)
+                    this.g = Math.round(Math.random()*255)
+                    this.b = Math.round(Math.random()*255)
+                    this.v = Math.random()*100+30
+                }
+            }
+            mundoangulo = Math.random()*Math.PI*2
+            var anchura = window.innerWidth
+            var altura = window.innerHeight
+            document.getElementById("lienzo").width = anchura
+            document.getElementById("lienzo").height = altura
+            var particula = new Array()
+            for(var i = 0;i<200;i++){
+                particula[i] = new Particula()
+            }
+            
+            
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            temporizador = setTimeout("bucle()",50)
+            function bucle(){
+                /*
+                contexto.fillStyle = "rgba(0,0,0,0.1)"
+                contexto.fillRect(0,0,anchura,altura)
+                */
+                contexto.clearRect(0,0,anchura,altura)
+                contexto.fillStyle = "black"
+                for(var i = 0;i<particula.length;i++){
+                    if(
+                        particula[i].x > anchura*2 || 
+                        particula[i].y > altura*2 || 
+                        particula[i].x < 0-anchura || 
+                        particula[i].y < 0-altura ){
+                        console.log("fuera")
+                            particula.splice(i,1)
+                           particula[particula.length] = new Particula()
+                           particula[particula.length-1].x -= Math.cos(mundoangulo)*particula[i].v*50
+                        particula[particula.length-1].y -= Math.sin(mundoangulo)*particula[i].v*50
+                        }
+                }
+                for(var i = 0;i<particula.length;i++){
+                    
+                    particula[i].x += Math.cos(mundoangulo)*particula[i].v/10
+                    particula[i].y += Math.sin(mundoangulo)*particula[i].v/10
+                    contexto.shadowColor = "rgb("+particula[i].r+","+particula[i].g+","+particula[i].b+")"
+                    contexto.shadowBlur = 25
+                    contexto.lineWidth = Math.round(particula[i].v/3)
+
+                    contexto.strokeStyle = "rgb("+particula[i].r+","+particula[i].g+","+particula[i].b+")"
+                    contexto.beginPath()
+                    contexto.lineCap = 'round';
+                    contexto.moveTo(particula[i].x,particula[i].y)
+                    contexto.lineCap = "round"
+                    contexto.lineTo(
+                        particula[i].x+Math.cos(mundoangulo)*particula[i].v,
+                        particula[i].y+Math.sin(mundoangulo)*particula[i].v
+                        )
+                    //contexto.closePath()
+                    contexto.stroke()
+                }
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",33)
+            }
+        </script>
+    </body>
+</html>

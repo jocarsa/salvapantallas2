@@ -1,0 +1,61 @@
+<html>
+	<head>
+		<style>
+			html,body{overflow:hidden;margin:0px;padding:0px;background:black;}
+		</style>
+	</head>
+	<body>
+		
+		<canvas id="lienzo" width=512 height=512></canvas>
+		<script>
+			
+			var anchura = window.innerWidth;
+			var altura = window.innerHeight;
+			
+			document.getElementById("lienzo").width = anchura
+			document.getElementById("lienzo").height = altura
+			
+			var p1x = Math.random()*anchura;
+			var p1y = Math.random()*altura;
+			var p1d = Math.random()*Math.PI*2
+			
+			var p2x = Math.random()*anchura;
+			var p2y = Math.random()*altura;
+			var p2d = Math.random()*Math.PI*2
+			
+			var r = Math.round(Math.random()*255)
+			var g = Math.round(Math.random()*255)
+			var b = Math.round(Math.random()*255)
+			var velocidad = 2;
+			
+			var contexto = document.getElementById("lienzo").getContext("2d")
+			contexto.lineWidth = 8
+			var temporizador = setTimeout("bucle()",1000)
+			function bucle(){
+				contexto.fillStyle = "rgba(0,0,0,0.001)"
+				contexto.fillRect(0,0,anchura,altura)
+				contexto.beginPath();
+				contexto.strokeStyle = "rgba("+Math.abs(r%255)+","+Math.abs(g%255)+","+Math.abs(b%255)+",0.3)" 
+				contexto.moveTo(p1x,p1y)
+				contexto.lineTo(p2x,p2y)
+				contexto.stroke();
+				contexto.closePath();
+				p1x += Math.cos(p1d)*velocidad
+				p1y += Math.sin(p1d)*velocidad
+				p2x += Math.cos(p2d)*velocidad
+				p2y += Math.sin(p2d)*velocidad
+				p1d += (Math.random()-0.5)*0.01
+				p2d += (Math.random()-0.5)*0.01
+				
+				if(p1x < 0 || p1x > anchura || p1y < 0 || p1y > altura){p1d+=Math.PI}
+				if(p2x < 0 || p2x > anchura || p2y < 0 || p2y > altura){p2d+=Math.PI}
+				r += Math.round((Math.random()-0.5)*4)
+				g += Math.round((Math.random()-0.5)*4)
+				b += Math.round((Math.random()-0.5)*4)
+				console.log(contexto.strokeStyle)
+				clearTimeout(temporizador)
+				temporizador = setTimeout("bucle()",1)
+			}
+		</script>
+	</body>
+</html>

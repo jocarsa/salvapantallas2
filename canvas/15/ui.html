@@ -1,0 +1,61 @@
+<html>
+    <head>
+    </head>
+    <body>
+        <canvas id="lienzo" width=300 height=300></canvas>
+        <script>
+            //var anchura = window.innerWidth;
+            //var altura = window.innerHeight;
+            var anchura = document.getElementById("lienzo").width;
+            var altura = document.getElementById("lienzo").height;
+            //document.getElementById("lienzo").width = anchura
+            //document.getElementById("lienzo").height = altura
+            class Circulo{
+                constructor(){
+                   this.r = 0;
+                    this.a1 = Math.random()*Math.PI*2
+                    this.a2 = Math.random()*Math.PI*2
+                    this.da1 = 0
+                    this.da2 = 0
+                    this.v = 0;
+                    this.d = 0;
+                }
+            }
+            
+            
+            
+            var tiempo = 0;
+            var contexto = document.getElementById("lienzo").getContext("2d")
+            
+            var temporizador = setTimeout("bucle()",1000)
+            
+            var circulos = new Array();
+            var numerocirculos = 10;
+            var anchuracirculo = 10
+            contexto.lineWidth = anchuracirculo+0.2;
+            
+            for(var i = 0;i<numerocirculos;i++){
+                circulos[i] = new Circulo();
+                circulos[i].r = i*anchuracirculo + 30
+            }
+            function bucle(){
+                contexto.clearRect(0,0,anchura,altura)
+                for(var i = 0;i<numerocirculos;i++){
+                    circulos[i].v += (Math.random()-0.5)*0.001
+                    circulos[i].a1 += Math.cos(tiempo*0.01)*0.001+circulos[i].v
+                    circulos[i].a2 += Math.sin(tiempo*0.01)*0.001+circulos[i].v
+                    contexto.beginPath();
+                    contexto.arc(anchura/2,altura/2,circulos[i].r,circulos[i].a1,circulos[i].a2,false)
+                    contexto.stroke();
+                    contexto.closePath();
+                }
+                tiempo++;
+                clearTimeout(temporizador)
+                temporizador = setTimeout("bucle()",10)
+            }
+            
+            
+
+        </script>
+    </body>
+</html>
