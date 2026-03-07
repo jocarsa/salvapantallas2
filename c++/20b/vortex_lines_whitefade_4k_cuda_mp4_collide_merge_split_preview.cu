@@ -1,28 +1,22 @@
-// vortex_lines_blackfade_4k_cuda_mp4_collide_merge_split_preview_energycolor_reset.cu
+// vortex_lines_blackfade_4k_cuda_mp4_collide_merge_split_preview_energycolor_reset_nvencfix.cu
 //
-// Features:
-// - 3840x2160 @ 60 fps, encode via ffmpeg pipe (nvenc default, libx265 optional)
-// - Live preview via OpenCV
-// - GPU physics + drawing
-// - CPU collision/merge/split (adds "thermal" heat)
-// - Black space background with fade-to-black trails
-// - Color by "energy" (red low -> violet high) from:
-//     * kinetic proxy (speed^2) [GPU]
-//     * pressure proxy (neighbor proximity sum) [GPU]
-//     * thermal/collision heat (accumulated on CPU, decays) [CPU]
-// - NEW: when particle count reaches maxParticles, simulation resets to the beginning:
-//     * particles reset to startParticles
-//     * framebuffer cleared to black
-//     * simFrame counter reset (growth timeline restarts)
+// CHANGES requested:
+// 1) Output filename is ALWAYS: "particle simulation creating planet [datetime].mp4"
+// 2) [datetime] is replaced with the actual current datetime at the moment each video starts
+// 3) Program runs in an endless loop, generating 1-hour videos back-to-back (until you press ESC)
 //
 // Build:
-//   nvcc -O3 -std=c++17 vortex_lines_blackfade_4k_cuda_mp4_collide_merge_split_preview_energycolor_reset.cu \
+//   nvcc -O3 -std=c++17 vortex_lines_blackfade_4k_cuda_mp4_collide_merge_split_preview_energycolor_reset_nvencfix.cu \
 //     -o vortex_energycolor_reset $(pkg-config --cflags --libs opencv4)
 //
 // Usage:
-//   ./vortex_energycolor_reset out.mp4                (defaults: 3600s, nvenc)
-//   ./vortex_energycolor_reset out.mp4 10 nvenc
-//   ./vortex_energycolor_reset out.mp4 10 libx265
+//   ./vortex_energycolor_reset                 (endless 1h segments, nvenc, current folder)
+//   ./vortex_energycolor_reset /path/to/outdir (endless 1h segments, nvenc, output directory)
+//   ./vortex_energycolor_reset /path/to/outdir libx265 (endless 1h segments, encoder = libx265 or nvenc)
+//
+// Notes:
+// - ESC stops after finishing the current frame loop iteration (it will finalize the current mp4 and exit).
+// - Each segment begins with a clean simulation reset (particles + framebuffer + timeline).
 
 #include <opencv2/opencv.hpp>
 #include <cuda_runtime.h>
@@ -36,6 +30,9 @@
 #include <chrono>
 #include <random>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 
 #define CUDA_CHECK(call) do {                                         \
     cudaError_t err = (call);                                         \
@@ -75,9 +72,42 @@ static inline int irand(std::mt19937& rng, int a, int b){
     return d(rng);
 }
 
+// ----------------------- Filename helper -----------------------
+static std::string current_datetime_string(){
+    // Format: YYYY-MM-DD_HH-MM-SS (safe for filenames)
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+
+    std::tm tmv{};
+#if defined(_WIN32)
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+
+    std::ostringstream oss;
+    oss << std::put_time(&tmv, "%Y-%m-%d_%H-%M-%S");
+    return oss.str();
+}
+
+static std::string join_path(const std::string& dir, const std::string& file){
+    if(dir.empty()) return file;
+    char last = dir.back();
+    if(last == '/' || last == '\\') return dir + file;
+    return dir + "/" + file;
+}
+
+static std::string make_segment_outpath(const std::string& outDir){
+    std::string dt = current_datetime_string();
+    std::string filename = "particle simulation creating planet " + dt + ".mp4";
+    return join_path(outDir, filename);
+}
+
 // ----------------------- FFmpeg pipe -----------------------
+// IMPORTANT: NVENC branch uses LOW-MEM settings to avoid "CreateInputBuffer failed: out of memory".
 static FILE* open_ffmpeg_pipe(const std::string& outPath, int W, int H, int fps, const std::string& encoder){
     std::string cmd;
+
     if(encoder == "libx265"){
         cmd =
             "ffmpeg -y "
@@ -88,9 +118,11 @@ static FILE* open_ffmpeg_pipe(const std::string& outPath, int W, int H, int fps,
             "-an "
             "-c:v libx265 -preset ultrafast "
             "-x265-params log-level=error:repeat-headers=1 "
+            "-pix_fmt yuv420p "
             "-tag:v hvc1 "
             "\"" + outPath + "\"";
     } else {
+        // Low-memory NVENC settings:
         cmd =
             "ffmpeg -y "
             "-f rawvideo -pix_fmt bgr24 "
@@ -98,8 +130,16 @@ static FILE* open_ffmpeg_pipe(const std::string& outPath, int W, int H, int fps,
             "-r " + std::to_string(fps) + " "
             "-i - "
             "-an "
-            "-c:v hevc_nvenc -preset p1 -tune ll "
+            "-vf format=nv12 "
+            "-c:v hevc_nvenc "
+            "-preset p1 "
+            "-tune ll "
             "-rc vbr -cq 28 -b:v 0 "
+            "-bf 0 "
+            "-rc-lookahead 0 "
+            "-spatial_aq 0 -temporal_aq 0 "
+            "-surfaces 4 "
+            "-pix_fmt yuv420p "
             "-tag:v hvc1 "
             "\"" + outPath + "\"";
     }
@@ -120,7 +160,6 @@ __global__ void k_clear_black(float3* buf, int Npix){
     buf[i] = make_float3(0.0f, 0.0f, 0.0f);
 }
 
-// Fade toward black: buf = buf * mul
 __global__ void k_fade_to_black(float3* buf, int Npix, float mul){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i >= Npix) return;
@@ -151,18 +190,15 @@ __device__ __forceinline__ float3 hsv_to_rgb(float h, float s, float v){
     return rgb;
 }
 
-// Step particles + compute KE and pressure proxy on GPU
 __global__ void k_step_particles(Particle* p, int n){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i >= n) return;
 
     Particle me = p[i];
 
-    // prev for line
     me.x2 = me.x;
     me.y2 = me.y;
 
-    // move
     me.x += me.vx;
     me.y += me.vy;
 
@@ -178,12 +214,11 @@ __global__ void k_step_particles(Particle* p, int n){
 
         if(fabsf(dx) < 3500.0f && fabsf(dy) < 3500.0f){
             float d2 = dx*dx + dy*dy;
-            float inv = 1.0f / (d2 + 4.0f); // softening
+            float inv = 1.0f / (d2 + 4.0f);
             float f = 0.002f * (pj.m + 1.0f) * inv;
             dvx += dx * f;
             dvy += dy * f;
 
-            // pressure proxy: more close neighbors => higher
             press += (pj.m + 1.0f) * inv;
         }
     }
@@ -191,7 +226,6 @@ __global__ void k_step_particles(Particle* p, int n){
     me.vx += dvx;
     me.vy += dvy;
 
-    // kinetic proxy: speed^2
     float v2 = me.vx*me.vx + me.vy*me.vy;
     me.ke = v2;
     me.press = press;
@@ -199,7 +233,6 @@ __global__ void k_step_particles(Particle* p, int n){
     p[i] = me;
 }
 
-// Draw thick line by stamping discs along the segment.
 __device__ __forceinline__ void stamp_disc(float3* buf, int W, int H, int cx, int cy, int rad, float3 col){
     int x0 = max(0, cx - rad);
     int x1 = min(W - 1, cx + rad);
@@ -219,10 +252,9 @@ __device__ __forceinline__ void stamp_disc(float3* buf, int W, int H, int cx, in
 }
 
 __device__ __forceinline__ float radius_from_m(float m){
-    return 1.0f + 0.5f * m; // ~1..6 px
+    return 1.0f + 0.5f * m;
 }
 
-// Energy->color mapping parameters (device constants)
 __device__ __constant__ float KE_W;
 __device__ __constant__ float P_W;
 __device__ __constant__ float H_W;
@@ -240,14 +272,12 @@ __global__ void k_draw_lines_energy(
 
     Particle me = p[i];
 
-    // Normalize & combine energy channels -> t in [0,1]
-    float keN = clampf(me.ke   * KE_NORM, 0.0f, 1.0f);
-    float prN = clampf(me.press* P_NORM,  0.0f, 1.0f);
-    float htN = clampf(me.heat * H_NORM,  0.0f, 1.0f);
+    float keN = clampf(me.ke    * KE_NORM, 0.0f, 1.0f);
+    float prN = clampf(me.press * P_NORM,  0.0f, 1.0f);
+    float htN = clampf(me.heat  * H_NORM,  0.0f, 1.0f);
 
     float t = clampf(KE_W * keN + P_W * prN + H_W * htN, 0.0f, 1.0f);
 
-    // Red (low) -> Violet (high): hue 0° -> 270°
     float hue = (270.0f / 360.0f) * t; // 0..0.75
     float3 col = hsv_to_rgb(hue, 1.0f, 1.0f);
 
@@ -306,7 +336,6 @@ static Particle make_particle(std::mt19937& rng, int W, int H){
     p.x2 = p.x;
     p.y2 = p.y;
 
-    // Tangential around center + random variance
     float cx = (float)W * 0.5f;
     float cy = (float)H * 0.5f;
 
@@ -327,14 +356,12 @@ static Particle make_particle(std::mt19937& rng, int W, int H){
     p.vx = dirx * sp;
     p.vy = diry * sp;
 
-    // base color (kept)
     p.r = (uint8_t)irand(rng, 64, 255);
     p.g = (uint8_t)irand(rng, 64, 255);
     p.b = (uint8_t)irand(rng, 64, 255);
 
     p.m = frand(rng, 0.0f, 10.0f);
 
-    // energy channels init
     p.heat  = 0.0f;
     p.press = 0.0f;
     p.ke    = 0.0f;
@@ -365,15 +392,10 @@ static inline void set_spawn_velocity(Particle& p, std::mt19937& rng, int W, int
 }
 
 // ----------------------- CPU collision / merge / split -----------------------
-static inline float radius_from_m_cpu(float m){
-    return 1.0f + 0.5f * m;
-}
-static inline float mass_from_m(float m){
-    return m + 1.0f;
-}
+static inline float radius_from_m_cpu(float m){ return 1.0f + 0.5f * m; }
+static inline float mass_from_m(float m){ return m + 1.0f; }
 
 static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std::mt19937& rng, int maxParticles){
-    // Tunables
     const float restitution = 0.75f;
     const float mergeSpeed  = 0.25f;
     const float splitSpeed  = 1.20f;
@@ -382,11 +404,10 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
     const float mergeProb   = 0.65f;
     const float splitProb   = 0.40f;
 
-    // Thermal / heat controls
-    const float heatGain = 0.65f;     // heat per collision speed unit
+    const float heatGain = 0.65f;
     const float heatOverlapGain = 0.15f;
-    const float heatClamp = 20.0f;    // prevent runaway
-    const float heatDecay = 0.985f;   // dissipation per frame
+    const float heatClamp = 20.0f;
+    const float heatDecay = 0.985f;
 
     const int n = (int)p.size();
     if(n < 2){
@@ -425,7 +446,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
             float mA = mass_from_m(A.m);
             float mB = mass_from_m(B.m);
 
-            // overlap separation
             float overlap = (minDist - dist);
             if(overlap > 0.0f){
                 float invSum = 1.0f / (mA + mB);
@@ -435,7 +455,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
                 B.y += ny * overlap * (mA * invSum);
             }
 
-            // Add collision heat to both
             {
                 float add = heatGain * relSpeed + heatOverlapGain * fmaxf(overlap, 0.0f);
                 float wA = mB / (mA + mB);
@@ -446,7 +465,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
 
             float u = frand(rng, 0.0f, 1.0f);
 
-            // 1) MERGE
             if(relSpeed < mergeSpeed && (mA + mB) <= maxMass && u < mergeProb){
                 Particle C{};
                 float mC = mA + mB;
@@ -467,7 +485,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
 
                 C.m = std::clamp(mC - 1.0f, 0.0f, 30.0f);
 
-                // merge heat
                 C.heat  = std::min(heatClamp, A.heat * wA + B.heat * wB);
                 C.press = 0.0f;
                 C.ke    = 0.0f;
@@ -477,7 +494,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
                 continue;
             }
 
-            // 2) SPLIT (limit strictly by maxParticles)
             if(relSpeed > splitSpeed && (int)p.size() < maxParticles){
                 int heavy = (mA >= mB) ? i : j;
                 Particle &Hh = p[heavy];
@@ -508,7 +524,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
                     S.x2 = S.x;
                     S.y2 = S.y;
 
-                    // share heat
                     float hh = Hh.heat;
                     Hh.heat = std::min(heatClamp, hh * 0.55f);
                     S.heat  = std::min(heatClamp, hh * 0.45f);
@@ -517,7 +532,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
                 }
             }
 
-            // 3) BOUNCE
             float vn = rvx*nx + rvy*ny;
             if(vn > 0.0f){
                 continue;
@@ -546,7 +560,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
         }
     }
 
-    // Remove dead
     if(std::any_of(dead.begin(), dead.end(), [](uint8_t v){return v!=0;})){
         std::vector<Particle> out;
         out.reserve(p.size());
@@ -557,7 +570,6 @@ static void collide_merge_split_cpu(std::vector<Particle>& p, int W, int H, std:
         p.swap(out);
     }
 
-    // Heat decay + NaN safety
     for(auto &Q : p){
         Q.heat *= heatDecay;
         if(!std::isfinite(Q.x) || !std::isfinite(Q.y) || !std::isfinite(Q.vx) || !std::isfinite(Q.vy)){
@@ -595,38 +607,40 @@ int main(int argc, char** argv){
     const int H = 2160;
     const int fps = 60;
 
-    std::string outPath = "out.mp4";
-    int seconds = 3600;              // default = 1 hour
-    std::string encoder = "nvenc";
-
-    if(argc >= 2) outPath = argv[1];
-    if(argc >= 3) seconds = std::max(1, std::atoi(argv[2]));
-    if(argc >= 4) encoder = argv[3];
-
-    const int totalFrames = seconds * fps;
+    // Endless loop, always 1-hour segments:
+    const int secondsPerVideo = 36000;
+    const int framesPerVideo  = secondsPerVideo * fps;
     const int Npix = W * H;
 
-    fprintf(stderr, "Output: %s\n", outPath.c_str());
-    fprintf(stderr, "Res: %dx%d | FPS: %d | Seconds: %d | Frames: %d\n", W, H, fps, seconds, totalFrames);
+    // Optional args:
+    // argv[1] = output directory (optional)
+    // argv[2] = encoder: "nvenc" (default) or "libx265"
+    std::string outDir = "";
+    std::string encoder = "nvenc";
+    if(argc >= 2) outDir = argv[1];
+    if(argc >= 3) encoder = argv[2];
+
+    fprintf(stderr, "Res: %dx%d | FPS: %d | Segment: %d seconds (%d frames)\n",
+            W, H, fps, secondsPerVideo, framesPerVideo);
+    fprintf(stderr, "Encoder: %s\n", encoder.c_str());
+    if(!outDir.empty()) fprintf(stderr, "Output dir: %s\n", outDir.c_str());
+    fprintf(stderr, "Press ESC to stop.\n");
 
     const int startParticles = 100;
     const int maxParticles   = 1000;
 
-    // Fade-to-black: smaller alpha => longer trails
     const float fadeAlpha = 0.02f;
     const float fadeMul   = 1.0f - fadeAlpha;
 
     const float gammaInv = 1.0f / 2.2f;
 
-    // Energy color tuning (host -> device constants)
     const float h_KE_W    = 0.50f;
     const float h_P_W     = 0.30f;
     const float h_H_W     = 0.20f;
 
-    // Normalizations (tune):
-    const float h_KE_NORM = 0.20f;   // ke ~ v^2
-    const float h_P_NORM  = 1.50f;   // pressure proxy
-    const float h_H_NORM  = 0.12f;   // heat proxy
+    const float h_KE_NORM = 0.20f;
+    const float h_P_NORM  = 1.50f;
+    const float h_H_NORM  = 0.12f;
 
     CUDA_CHECK(cudaMemcpyToSymbol(KE_W,    &h_KE_W,    sizeof(float)));
     CUDA_CHECK(cudaMemcpyToSymbol(P_W,     &h_P_W,     sizeof(float)));
@@ -649,169 +663,174 @@ int main(int argc, char** argv){
     CUDA_CHECK(cudaMalloc(&dBuf, sizeof(float3) * (size_t)Npix));
     CUDA_CHECK(cudaMalloc(&dBGR, sizeof(unsigned char) * (size_t)Npix * 3));
 
-    // init buffer to BLACK (space)
-    {
-        int block = 256;
-        int grid  = (Npix + block - 1) / block;
-        k_clear_black<<<grid, block>>>(dBuf, Npix);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
-
     unsigned char* hFramePinned = nullptr;
     CUDA_CHECK(cudaMallocHost(&hFramePinned, (size_t)Npix * 3));
 
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreate(&stream));
 
-    FILE* ff = open_ffmpeg_pipe(outPath, W, H, fps, encoder);
-    if(!ff){
-        fprintf(stderr, "Could not open FFmpeg pipe.\n");
-        return 1;
-    }
-
+    // OpenCV preview (single window reused across segments)
     cv::namedWindow("preview", cv::WINDOW_NORMAL);
     cv::resizeWindow("preview", 1280, 720);
     cv::Mat preview(H, W, CV_8UC3, hFramePinned);
 
-    auto t0 = std::chrono::high_resolution_clock::now();
-    bool earlyStop = false;
+    bool stopAll = false;
+    long long segmentIndex = 0;
 
-    int simFrame = 0; // resets when particle count hits maxParticles
+    while(!stopAll){
+        // Each segment gets a fresh datetime-based filename
+        std::string outPath = make_segment_outpath(outDir);
 
-    for(int frame=0; frame<totalFrames; frame++){
-        // If we are already at max at the start of a frame, reset now.
-        if((int)hP.size() >= maxParticles){
-            reset_simulation(hP, startParticles, maxParticles, W, H, rng, dBuf, Npix, stream);
-            simFrame = 0;
-        }
+        fprintf(stderr, "\n============================================================\n");
+        fprintf(stderr, "Starting segment #%lld\n", segmentIndex);
+        fprintf(stderr, "Output: %s\n", outPath.c_str());
+        fprintf(stderr, "============================================================\n");
 
-        // Growth rule driven by simFrame (so it restarts after reset)
-        if(simFrame > 0 && (simFrame % 100) == 0 && (int)hP.size() < maxParticles){
-            int tempIndex = (int)hP.size();
-            hP.push_back(make_particle(rng, W, H));
-            Particle parent = hP[tempIndex];
-            set_spawn_velocity(hP[tempIndex], rng, W, H, 1.0f);
+        // Hard reset at the start of each 1-hour video (clean timeline)
+        reset_simulation(hP, startParticles, maxParticles, W, H, rng, dBuf, Npix, stream);
+        int simFrame = 0;
 
-            for(int k=0; k<20 && (int)hP.size() < maxParticles; k++){
-                Particle c = make_particle(rng, W, H);
-
-                float randx = (frand(rng, -0.5f, 0.5f)) * 20.0f;
-                float randy = (frand(rng, -0.5f, 0.5f)) * 20.0f;
-
-                c.x  = parent.x  + randx;
-                c.y  = parent.y  + randy;
-                c.x2 = c.x;
-                c.y2 = c.y;
-
-                c.vx = parent.vx;
-                c.vy = parent.vy;
-                set_spawn_velocity(c, rng, W, H, 1.15f);
-
-                c.heat = 0.0f;
-                c.press = 0.0f;
-                c.ke = 0.0f;
-
-                hP.push_back(c);
-            }
-        }
-
-        int N = (int)hP.size();
-        if(N > maxParticles){
-            // Safety (should not happen due to checks); reset immediately.
-            reset_simulation(hP, startParticles, maxParticles, W, H, rng, dBuf, Npix, stream);
-            simFrame = 0;
-            N = (int)hP.size();
-        }
-
-        // upload particles
-        CUDA_CHECK(cudaMemcpyAsync(dP, hP.data(), sizeof(Particle)*(size_t)N, cudaMemcpyHostToDevice, stream));
-
-        // 1) fade to black
-        {
-            int block = 256;
-            int grid = (Npix + block - 1) / block;
-            k_fade_to_black<<<grid, block, 0, stream>>>(dBuf, Npix, fadeMul);
-        }
-
-        // 2) step physics + compute KE/pressure
-        {
-            int block = 128;
-            int grid = (N + block - 1) / block;
-            k_step_particles<<<grid, block, 0, stream>>>(dP, N);
-        }
-
-        // 3) draw lines with energy color
-        {
-            int block = 64;
-            int grid = (N + block - 1) / block;
-            k_draw_lines_energy<<<grid, block, 0, stream>>>(dP, N, dBuf, W, H);
-        }
-
-        // 4) compose
-        {
-            int block = 256;
-            int grid = (Npix + block - 1) / block;
-            k_compose_to_bgr<<<grid, block, 0, stream>>>(dBuf, dBGR, Npix, gammaInv);
-        }
-
-        CUDA_CHECK(cudaGetLastError());
-
-        // download frame + particles
-        CUDA_CHECK(cudaMemcpyAsync(hFramePinned, dBGR, (size_t)Npix*3, cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaMemcpyAsync(hP.data(), dP, sizeof(Particle)*(size_t)N, cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-
-        // preview
-        cv::imshow("preview", preview);
-        int key = cv::waitKey(1);
-        if(key == 27){
-            earlyStop = true;
-        }
-
-        // CPU collision/merge/split (adds heat; split limited by maxParticles)
-        collide_merge_split_cpu(hP, W, H, rng, maxParticles);
-
-        // cull out-of-bounds
-        hP.erase(
-            std::remove_if(hP.begin(), hP.end(), [&](const Particle& q){
-                return (q.x < -0.5f * W) || (q.x > 1.5f * W) || (q.y < -0.5f * H) || (q.y > 1.5f * H);
-            }),
-            hP.end()
-        );
-
-        // If we've reached max now, reset the SIMULATION (next iteration starts fresh)
-        if((int)hP.size() >= maxParticles){
-            reset_simulation(hP, startParticles, maxParticles, W, H, rng, dBuf, Npix, stream);
-            simFrame = 0;
-        } else {
-            simFrame++;
-        }
-
-        // write to ffmpeg
-        size_t written = fwrite(hFramePinned, 1, (size_t)Npix*3, ff);
-        if(written != (size_t)Npix*3){
-            fprintf(stderr, "FFmpeg write failed at frame %d.\n", frame);
+        FILE* ff = open_ffmpeg_pipe(outPath, W, H, fps, encoder);
+        if(!ff){
+            fprintf(stderr, "Could not open FFmpeg pipe.\n");
             break;
         }
 
-        if((frame % 60) == 0){
-            fprintf(stderr, "\rFrame %d / %d | Particles: %d | SimFrame: %d   ",
-                    frame, totalFrames, (int)hP.size(), simFrame);
-            fflush(stderr);
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        for(int frame=0; frame<framesPerVideo; frame++){
+            if((int)hP.size() >= maxParticles){
+                reset_simulation(hP, startParticles, maxParticles, W, H, rng, dBuf, Npix, stream);
+                simFrame = 0;
+            }
+
+            if(simFrame > 0 && (simFrame % 100) == 0 && (int)hP.size() < maxParticles){
+                int tempIndex = (int)hP.size();
+                hP.push_back(make_particle(rng, W, H));
+                Particle parent = hP[tempIndex];
+                set_spawn_velocity(hP[tempIndex], rng, W, H, 1.0f);
+
+                for(int k=0; k<20 && (int)hP.size() < maxParticles; k++){
+                    Particle c = make_particle(rng, W, H);
+
+                    float randx = (frand(rng, -0.5f, 0.5f)) * 20.0f;
+                    float randy = (frand(rng, -0.5f, 0.5f)) * 20.0f;
+
+                    c.x  = parent.x  + randx;
+                    c.y  = parent.y  + randy;
+                    c.x2 = c.x;
+                    c.y2 = c.y;
+
+                    c.vx = parent.vx;
+                    c.vy = parent.vy;
+                    set_spawn_velocity(c, rng, W, H, 1.15f);
+
+                    c.heat  = 0.0f;
+                    c.press = 0.0f;
+                    c.ke    = 0.0f;
+
+                    hP.push_back(c);
+                }
+            }
+
+            int N = (int)hP.size();
+            if(N > maxParticles){
+                reset_simulation(hP, startParticles, maxParticles, W, H, rng, dBuf, Npix, stream);
+                simFrame = 0;
+                N = (int)hP.size();
+            }
+
+            CUDA_CHECK(cudaMemcpyAsync(dP, hP.data(), sizeof(Particle)*(size_t)N, cudaMemcpyHostToDevice, stream));
+
+            // 1) fade to black
+            {
+                int block = 256;
+                int grid = (Npix + block - 1) / block;
+                k_fade_to_black<<<grid, block, 0, stream>>>(dBuf, Npix, fadeMul);
+            }
+
+            // 2) step physics
+            {
+                int block = 128;
+                int grid = (N + block - 1) / block;
+                k_step_particles<<<grid, block, 0, stream>>>(dP, N);
+            }
+
+            // 3) draw
+            {
+                int block = 64;
+                int grid = (N + block - 1) / block;
+                k_draw_lines_energy<<<grid, block, 0, stream>>>(dP, N, dBuf, W, H);
+            }
+
+            // 4) compose
+            {
+                int block = 256;
+                int grid = (Npix + block - 1) / block;
+                k_compose_to_bgr<<<grid, block, 0, stream>>>(dBuf, dBGR, Npix, gammaInv);
+            }
+
+            CUDA_CHECK(cudaGetLastError());
+
+            // download frame + particles
+            CUDA_CHECK(cudaMemcpyAsync(hFramePinned, dBGR, (size_t)Npix*3, cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaMemcpyAsync(hP.data(), dP, sizeof(Particle)*(size_t)N, cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            cv::imshow("preview", preview);
+            int key = cv::waitKey(1);
+            if(key == 27){
+                stopAll = true; // finish this segment loop and then exit after finalize
+            }
+
+            collide_merge_split_cpu(hP, W, H, rng, maxParticles);
+
+            hP.erase(
+                std::remove_if(hP.begin(), hP.end(), [&](const Particle& q){
+                    return (q.x < -0.5f * W) || (q.x > 1.5f * W) || (q.y < -0.5f * H) || (q.y > 1.5f * H);
+                }),
+                hP.end()
+            );
+
+            if((int)hP.size() >= maxParticles){
+                reset_simulation(hP, startParticles, maxParticles, W, H, rng, dBuf, Npix, stream);
+                simFrame = 0;
+            } else {
+                simFrame++;
+            }
+
+            size_t written = fwrite(hFramePinned, 1, (size_t)Npix*3, ff);
+            if(written != (size_t)Npix*3){
+                fprintf(stderr, "\nFFmpeg write failed at frame %d.\n", frame);
+                stopAll = true;
+                break;
+            }
+
+            if((frame % 60) == 0){
+                fprintf(stderr, "\rSegment #%lld | Frame %d / %d | Particles: %d | SimFrame: %d   ",
+                        segmentIndex, frame, framesPerVideo, (int)hP.size(), simFrame);
+                fflush(stderr);
+            }
+
+            if(stopAll) break;
         }
 
-        if(earlyStop) break;
+        fprintf(stderr, "\nFinalizing encode...\n");
+        fflush(ff);
+        pclose(ff);
+
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double sec = std::chrono::duration<double>(t1 - t0).count();
+        fprintf(stderr, "Segment #%lld done. Time: %.2f s for %d frames (%.2f fps effective)\n",
+                segmentIndex, sec, framesPerVideo, framesPerVideo / std::max(sec, 1e-9));
+
+        segmentIndex++;
+
+        if(stopAll){
+            fprintf(stderr, "ESC received. Stopping after segment finalize.\n");
+            break;
+        }
     }
-
-    fprintf(stderr, "\nFinalizing encode...\n");
-    fflush(ff);
-    pclose(ff);
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double sec = std::chrono::duration<double>(t1 - t0).count();
-    fprintf(stderr, "Done. Time: %.2f s for %d frames (%.2f fps effective)\n",
-            sec, totalFrames, totalFrames / std::max(sec, 1e-9));
 
     CUDA_CHECK(cudaStreamDestroy(stream));
     CUDA_CHECK(cudaFreeHost(hFramePinned));
