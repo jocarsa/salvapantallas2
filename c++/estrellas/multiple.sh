@@ -1,0 +1,17 @@
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
+./starfield_cuda
