@@ -557,7 +557,7 @@ int main(int argc, char** argv) {
     const int fps = 60;
 
     std::string outPath = makeDefaultOutputFilename();
-    int seconds = 3600;
+    int seconds = 36000;
     int N = 3000;
     std::string encoder = "nvenc";
     int preview = 1;
