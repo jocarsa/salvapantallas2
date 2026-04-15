@@ -1,4 +1,4 @@
-// cells_cuda_render_mp4_grid_molecules.cu
+// cells_cuda_render_mp4_grid.cu
 //
 // CUDA offline renderer -> FFmpeg MP4 (H.265), with:
 // - Uniform grid neighbor search
@@ -7,24 +7,30 @@
 // - 1920x1080 @ 60fps -> mp4 h265
 // - Live framebuffer preview via OpenCV
 // - Stable position-based collision solver with substeps
-// - One kinematic "chaos ball" that moves through the scene and perturbs particles
 // - Molecular behavior:
 //      * fixed palette: red, green, blue, cyan, magenta, yellow
 //      * same-color particles can bond when close
 //      * bonds act like molecule links
-//      * bonds can break if chaos ball hits hard enough
+//      * bonds can break if stretched or shaken too hard
+// - Water-like animated turbulence instead of chaos ball
+//
+// Main fix in this version:
+// - Particle separation is now proportional to particle radii
+// - Bond creation distance is proportional to pair radius sum
+// - Bond rest length is proportional to pair radius sum
 //
 // Compile:
-//   nvcc -O3 -std=c++17 cells_cuda_render_mp4_grid_molecules.cu `pkg-config --cflags --libs opencv4` -o cells_cuda_render_mp4_grid_molecules
+//   nvcc -O3 -std=c++17 -diag-suppress=611 cells_cuda_render_mp4_grid.cu \
+//     $(pkg-config --cflags --libs opencv4) -o cells_cuda_render_mp4_grid
 //
 // Usage:
-//   ./cells_cuda_render_mp4_grid_molecules
-//   ./cells_cuda_render_mp4_grid_molecules out.mp4
-//   ./cells_cuda_render_mp4_grid_molecules out.mp4 3600
-//   ./cells_cuda_render_mp4_grid_molecules out.mp4 3600 12000
-//   ./cells_cuda_render_mp4_grid_molecules out.mp4 3600 12000 nvenc
-//   ./cells_cuda_render_mp4_grid_molecules out.mp4 3600 12000 libx265
-//   ./cells_cuda_render_mp4_grid_molecules out.mp4 3600 12000 nvenc 1
+//   ./cells_cuda_render_mp4_grid
+//   ./cells_cuda_render_mp4_grid out.mp4
+//   ./cells_cuda_render_mp4_grid out.mp4 3600
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000 nvenc
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000 libx265
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000 nvenc 1
 
 #include <opencv2/opencv.hpp>
 #include <cuda_runtime.h>
@@ -56,7 +62,6 @@ struct Particle {
     float r, g, b;
     float rad;
     int   colorId;
-    float hit;      // accumulates recent chaos-ball hit force
 };
 
 // ---------------- Device helpers ----------------
@@ -73,8 +78,44 @@ __device__ __forceinline__ int cellIndex(int cx, int cy, int gridW) {
     return cy * gridW + cx;
 }
 
-__device__ __forceinline__ float len2(float x, float y) {
-    return x * x + y * y;
+__device__ __forceinline__ float fract_local(float x) {
+    return x - floorf(x);
+}
+
+__device__ __forceinline__ float hash2f(float x, float y) {
+    return fract_local(sinf(x * 127.1f + y * 311.7f) * 43758.5453123f);
+}
+
+__device__ float valueNoise(float x, float y) {
+    float ix = floorf(x);
+    float iy = floorf(y);
+    float fx = x - ix;
+    float fy = y - iy;
+
+    float a = hash2f(ix,     iy);
+    float b = hash2f(ix + 1, iy);
+    float c = hash2f(ix,     iy + 1);
+    float d = hash2f(ix + 1, iy + 1);
+
+    float ux = fx * fx * (3.0f - 2.0f * fx);
+    float uy = fy * fy * (3.0f - 2.0f * fy);
+
+    float ab = a + (b - a) * ux;
+    float cd = c + (d - c) * ux;
+    return ab + (cd - ab) * uy;
+}
+
+__device__ float fbm(float x, float y) {
+    float v = 0.0f;
+    float a = 0.5f;
+    float f = 1.0f;
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        v += a * valueNoise(x * f, y * f);
+        f *= 2.0f;
+        a *= 0.5f;
+    }
+    return v;
 }
 
 __device__ __forceinline__ bool try_insert_one_side(
@@ -145,55 +186,16 @@ __global__ void k_build_grid(
     cy = max(0, min(gridH - 1, cy));
 
     int c = cellIndex(cx, cy, gridW);
-
     int old = atomicExch(&cellHead[c], i);
     next[i] = old;
 }
 
-// ---------------- Bond init / decay ----------------
+// ---------------- Bonds ----------------
 __global__ void k_init_bonds(int* bonds, float* rest, int totalSlots) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= totalSlots) return;
     bonds[i] = -1;
     rest[i]  = 0.0f;
-}
-
-__global__ void k_decay_hit(Particle* p, int n, float keep) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    p[i].hit *= keep;
-}
-
-// ---------------- Physics kernels ----------------
-__global__ void k_predict_particles(
-    Particle* p, int n,
-    int W, int H,
-    float dt,
-    float swirlStrength,
-    float damping
-) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-
-    Particle me = p[i];
-
-    float cx0 = 0.5f * W;
-    float cy0 = 0.5f * H;
-
-    float dxC = me.x - cx0;
-    float dyC = me.y - cy0;
-    float invLenC = rsqrtf(dxC * dxC + dyC * dyC + 1e-6f);
-
-    float ax = (-dyC * invLenC) * swirlStrength;
-    float ay = ( dxC * invLenC) * swirlStrength;
-
-    me.vx = (me.vx + ax * dt) * damping;
-    me.vy = (me.vy + ay * dt) * damping;
-
-    me.px = me.x + me.vx * dt;
-    me.py = me.y + me.vy * dt;
-
-    p[i] = me;
 }
 
 __global__ void k_try_create_bonds(
@@ -202,24 +204,19 @@ __global__ void k_try_create_bonds(
     float cellSize, int gridW, int gridH,
     int* bonds, float* rest,
     int maxBondsPerParticle,
-    float createDist,
-    float maxRelSpeed,
-    float maxHitForBonding
+    float createDistFactor,
+    float maxRelSpeed
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
 
     Particle me = p[i];
-    if (me.hit > maxHitForBonding) return;
-
     int baseI = i * maxBondsPerParticle;
 
     int cx = (int)floorf(me.px / cellSize);
     int cy = (int)floorf(me.py / cellSize);
     cx = max(0, min(gridW - 1, cx));
     cy = max(0, min(gridH - 1, cy));
-
-    float createDist2 = createDist * createDist;
 
     for (int oy = -1; oy <= 1; oy++) {
         int ny = cy + oy;
@@ -235,10 +232,14 @@ __global__ void k_try_create_bonds(
             while (j != -1) {
                 if (j > i) {
                     Particle pj = p[j];
-                    if (pj.colorId == me.colorId && pj.hit <= maxHitForBonding) {
+                    if (pj.colorId == me.colorId) {
                         float dx = pj.px - me.px;
                         float dy = pj.py - me.py;
                         float d2 = dx * dx + dy * dy;
+
+                        float pairTouchDist  = me.rad + pj.rad;
+                        float pairCreateDist = pairTouchDist * createDistFactor;
+                        float createDist2    = pairCreateDist * pairCreateDist;
 
                         if (d2 < createDist2) {
                             float rvx = pj.vx - me.vx;
@@ -249,8 +250,7 @@ __global__ void k_try_create_bonds(
                                 if (!already_bonded(bonds, baseI, maxBondsPerParticle, j)) {
                                     int baseJ = j * maxBondsPerParticle;
 
-                                    float d = sqrtf(d2 + 1e-8f);
-                                    float restLen = fmaxf(d, me.rad + pj.rad + 1.0f);
+                                    float restLen = pairTouchDist * 1.02f;
 
                                     bool okI = try_insert_one_side(
                                         bonds, rest, baseI, maxBondsPerParticle, j, restLen
@@ -300,8 +300,7 @@ __global__ void k_solve_bonds(
         float dx = pj.px - me.px;
         float dy = pj.py - me.py;
         float d2 = dx * dx + dy * dy;
-        float d = sqrtf(d2 + 1e-8f);
-
+        float d  = sqrtf(d2 + 1e-8f);
         if (d < 1e-6f) continue;
 
         float nx = dx / d;
@@ -326,6 +325,105 @@ __global__ void k_solve_bonds(
     p[i] = me;
 }
 
+__global__ void k_break_bonds(
+    Particle* p, int n,
+    int* bonds, float* rest,
+    int maxBondsPerParticle,
+    float breakStretch,
+    float breakRelativeSpeed
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    Particle me = p[i];
+    int baseI = i * maxBondsPerParticle;
+
+    for (int k = 0; k < maxBondsPerParticle; k++) {
+        int idxI = baseI + k;
+        int j = bonds[idxI];
+        if (j < 0) continue;
+        if (j < i) continue;
+
+        Particle pj = p[j];
+        float restLen = rest[idxI];
+
+        float dx = pj.px - me.px;
+        float dy = pj.py - me.py;
+        float d = sqrtf(dx * dx + dy * dy + 1e-8f);
+
+        float stretchRatio = (restLen > 1e-6f) ? d / restLen : 1.0f;
+
+        float rvx = pj.vx - me.vx;
+        float rvy = pj.vy - me.vy;
+        float relSpeed = sqrtf(rvx * rvx + rvy * rvy + 1e-8f);
+
+        bool breakIt = false;
+        if (stretchRatio > breakStretch) breakIt = true;
+        if (relSpeed > breakRelativeSpeed) breakIt = true;
+
+        if (breakIt) {
+            int baseJ = j * maxBondsPerParticle;
+            bonds[idxI] = -1;
+            rest[idxI] = 0.0f;
+            remove_one_side(bonds, rest, baseJ, maxBondsPerParticle, i);
+        }
+    }
+}
+
+// ---------------- Physics ----------------
+__global__ void k_predict_particles(
+    Particle* p, int n,
+    int W, int H,
+    float dt,
+    float swirlStrength,
+    float damping,
+    float time,
+    float turbulenceStrength,
+    float turbulenceScale,
+    float turbulenceSpeed
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    Particle me = p[i];
+
+    float cx0 = 0.5f * W;
+    float cy0 = 0.5f * H;
+
+    float dxC = me.x - cx0;
+    float dyC = me.y - cy0;
+    float invLenC = rsqrtf(dxC * dxC + dyC * dyC + 1e-6f);
+
+    float ax = (-dyC * invLenC) * swirlStrength;
+    float ay = ( dxC * invLenC) * swirlStrength;
+
+    float nx = me.x * turbulenceScale;
+    float ny = me.y * turbulenceScale;
+    float tt = time * turbulenceSpeed;
+
+    float e = 0.75f;
+
+    float n1 = fbm(nx + tt * 0.70f,          ny - tt * 0.45f);
+    float n2 = fbm(nx + 19.3f + tt * 0.31f,  ny + 7.1f + tt * 0.63f);
+
+    float gx = fbm(nx + e, ny + tt) - fbm(nx - e, ny + tt);
+    float gy = fbm(nx, ny + e + tt) - fbm(nx, ny - e + tt);
+
+    float curlX =  gy;
+    float curlY = -gx;
+
+    ax += turbulenceStrength * (1.8f * (n1 - 0.5f) + 1.2f * curlX + 0.7f * (n2 - 0.5f));
+    ay += turbulenceStrength * (1.8f * (n2 - 0.5f) + 1.2f * curlY + 0.7f * (n1 - 0.5f));
+
+    me.vx = (me.vx + ax * dt) * damping;
+    me.vy = (me.vy + ay * dt) * damping;
+
+    me.px = me.x + me.vx * dt;
+    me.py = me.y + me.vy * dt;
+
+    p[i] = me;
+}
+
 __global__ void k_solve_collisions_pbd(
     Particle* p, int n,
     const int* cellHead, const int* next,
@@ -333,13 +431,7 @@ __global__ void k_solve_collisions_pbd(
     float cellSize,
     int gridW, int gridH,
     float maxPushPerIter,
-    float stiffness,
-    float chaosX,
-    float chaosY,
-    float chaosR,
-    float chaosVX,
-    float chaosVY,
-    float hitForceScale
+    float stiffness
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -354,7 +446,6 @@ __global__ void k_solve_collisions_pbd(
     float corrX = 0.0f;
     float corrY = 0.0f;
 
-    // particle-particle collisions
     for (int oy = -1; oy <= 1; oy++) {
         int ny = cy + oy;
         if (ny < 0 || ny >= gridH) continue;
@@ -402,43 +493,6 @@ __global__ void k_solve_collisions_pbd(
         }
     }
 
-    // particle-chaosBall collision + hit accumulation
-    {
-        float dx = me.px - chaosX;
-        float dy = me.py - chaosY;
-        float d2 = dx * dx + dy * dy;
-
-        float minDist = me.rad + chaosR;
-        float minDist2 = minDist * minDist;
-
-        if (d2 < minDist2) {
-            float d = sqrtf(d2 + 1e-8f);
-
-            float nxn, nyn;
-            if (d > 1e-6f) {
-                nxn = dx / d;
-                nyn = dy / d;
-            } else {
-                nxn = 1.0f;
-                nyn = 0.0f;
-                d = minDist;
-            }
-
-            float overlap = minDist - d;
-            float push = 1.2f * stiffness * overlap;
-
-            corrX += nxn * push;
-            corrY += nyn * push;
-
-            float relVX = me.vx - chaosVX;
-            float relVY = me.vy - chaosVY;
-            float relAlongN = fabsf(relVX * nxn + relVY * nyn);
-
-            float hitAdd = hitForceScale * (overlap * 0.9f + relAlongN * 0.12f);
-            me.hit = fminf(me.hit + hitAdd, 1000.0f);
-        }
-    }
-
     float corrLen2 = corrX * corrX + corrY * corrY;
     float maxPush2 = maxPushPerIter * maxPushPerIter;
     if (corrLen2 > maxPush2) {
@@ -457,53 +511,6 @@ __global__ void k_solve_collisions_pbd(
     if (me.py > H - pad) me.py = H - pad;
 
     p[i] = me;
-}
-
-__global__ void k_break_bonds(
-    Particle* p, int n,
-    int* bonds, float* rest,
-    int maxBondsPerParticle,
-    float breakStretch,
-    float breakHitThreshold,
-    float breakRelativeSpeed
-) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-
-    Particle me = p[i];
-    int baseI = i * maxBondsPerParticle;
-
-    for (int k = 0; k < maxBondsPerParticle; k++) {
-        int idxI = baseI + k;
-        int j = bonds[idxI];
-        if (j < 0) continue;
-        if (j < i) continue; // process pair only once
-
-        Particle pj = p[j];
-        float restLen = rest[idxI];
-
-        float dx = pj.px - me.px;
-        float dy = pj.py - me.py;
-        float d = sqrtf(dx * dx + dy * dy + 1e-8f);
-
-        float stretchRatio = (restLen > 1e-6f) ? d / restLen : 1.0f;
-
-        float rvx = pj.vx - me.vx;
-        float rvy = pj.vy - me.vy;
-        float relSpeed = sqrtf(rvx * rvx + rvy * rvy + 1e-8f);
-
-        bool breakIt = false;
-        if (stretchRatio > breakStretch) breakIt = true;
-        if (relSpeed > breakRelativeSpeed) breakIt = true;
-        if (me.hit > breakHitThreshold || pj.hit > breakHitThreshold) breakIt = true;
-
-        if (breakIt) {
-            int baseJ = j * maxBondsPerParticle;
-            bonds[idxI] = -1;
-            rest[idxI] = 0.0f;
-            remove_one_side(bonds, rest, baseJ, maxBondsPerParticle, i);
-        }
-    }
 }
 
 __global__ void k_finalize_particles(
@@ -603,63 +610,6 @@ __global__ void k_draw_particles(
     }
 }
 
-__global__ void k_draw_chaos_ball(
-    float4* accum, int W, int H,
-    float cx, float cy, float rad,
-    float rr, float gg, float bb,
-    float glowRadiusFactor,
-    float glowIntensity,
-    float coreEdgeSoftness,
-    float whiteCoreBoost
-) {
-    float R = rad * glowRadiusFactor;
-    R = fminf(R, 120.0f);
-
-    int x0 = (int)floorf(cx - R);
-    int x1 = (int)ceilf (cx + R);
-    int y0 = (int)floorf(cy - R);
-    int y1 = (int)ceilf (cy + R);
-
-    x0 = max(0, x0); y0 = max(0, y0);
-    x1 = min(W - 1, x1); y1 = min(H - 1, y1);
-
-    float sigma = 0.33f * R;
-    float inv2s2 = 1.0f / (2.0f * sigma * sigma + 1e-6f);
-
-    float coreIn  = rad * (1.0f - coreEdgeSoftness);
-    float coreOut = rad * (1.0f + coreEdgeSoftness);
-
-    for (int y = y0; y <= y1; y++) {
-        for (int x = x0; x <= x1; x++) {
-            float dx = (x + 0.5f) - cx;
-            float dy = (y + 0.5f) - cy;
-            float d2 = dx * dx + dy * dy;
-            if (d2 > R * R) continue;
-
-            float d = sqrtf(d2 + 1e-6f);
-
-            float core = 1.0f - smoothstep(coreIn, coreOut, d);
-            core = clampf(core, 0.0f, 1.0f);
-
-            float glow = expf(-d2 * inv2s2);
-            float w = glowIntensity * (0.90f * glow + 3.0f * core);
-
-            int idx = y * W + x;
-
-            atomicAdd(&accum[idx].x, rr * w);
-            atomicAdd(&accum[idx].y, gg * w);
-            atomicAdd(&accum[idx].z, bb * w);
-
-            float wWhite = whiteCoreBoost * core * glowIntensity * 1.35f;
-            atomicAdd(&accum[idx].x, 1.0f * wWhite);
-            atomicAdd(&accum[idx].y, 1.0f * wWhite);
-            atomicAdd(&accum[idx].z, 1.0f * wWhite);
-
-            atomicAdd(&accum[idx].w, w + wWhite);
-        }
-    }
-}
-
 __global__ void k_tonemap_to_bgr(
     const float4* accum,
     unsigned char* outBGR,
@@ -692,40 +642,6 @@ __global__ void k_tonemap_to_bgr(
     outBGR[3 * i + 2] = (unsigned char)lrintf(255.0f * r);
 }
 
-// ---------------- Chaos ball motion ----------------
-static void computeChaosBall(
-    float t, int W, int H,
-    float& x, float& y, float& rad
-) {
-    rad = 64.0f;
-
-    const float cx = 0.5f * W;
-    const float cy = 0.5f * H;
-
-    const float orbitRx = 0.30f * W;
-    const float orbitRy = 0.25f * H;
-
-    const float baseAng  = 0.38f * t;
-    const float wobble1  = 0.65f * sinf(0.91f * t);
-    const float wobble2  = 0.45f * cosf(1.37f * t);
-    const float ang      = baseAng + wobble1 + wobble2;
-
-    const float rxMod = orbitRx * (0.82f + 0.18f * sinf(0.53f * t));
-    const float ryMod = orbitRy * (0.82f + 0.18f * cosf(0.71f * t));
-
-    const float smallX = 120.0f * cosf(2.17f * t + 0.7f);
-    const float smallY =  95.0f * sinf(1.83f * t + 1.2f);
-
-    x = cx + cosf(ang) * rxMod + smallX;
-    y = cy + sinf(ang * 1.07f) * ryMod + smallY;
-
-    float pad = rad + 8.0f;
-    if (x < pad) x = pad;
-    if (x > W - pad) x = W - pad;
-    if (y < pad) y = pad;
-    if (y > H - pad) y = H - pad;
-}
-
 // ---------------- Datetime output filename ----------------
 static std::string makeDefaultOutputFilename() {
     auto now = std::chrono::system_clock::now();
@@ -740,7 +656,6 @@ static std::string makeDefaultOutputFilename() {
 
     char datetimeBuf[64];
     std::strftime(datetimeBuf, sizeof(datetimeBuf), "%Y%m%d_%H%M%S", &tm_now);
-
     return std::string("out_") + datetimeBuf + ".mp4";
 }
 
@@ -792,7 +707,7 @@ int main(int argc, char** argv) {
 
     std::string outPath = makeDefaultOutputFilename();
     int seconds = 36000;
-    int N =6000;
+    int N = 146000;
     std::string encoder = "nvenc";
     int preview = 1;
 
@@ -810,33 +725,32 @@ int main(int argc, char** argv) {
     const int solverIters = 3;
     const float subDt = dt / (float)substeps;
 
-    const float swirlStrength = 18.0f;
-    const float damping = 0.9994f;
+    const float swirlStrength = 13.0f;
+    const float damping = 0.9991f;
     const float velocityDamping = 0.998f;
-    const float maxSpeed = 520.0f;
+    const float maxSpeed = 440.0f;
 
-    const float minRadius = 2.5f;
-    const float maxRadius = 8.0f;
-    const float chaosBallRadius = 64.0f;
+    const float turbulenceStrength = 240.0f;
+    const float turbulenceScale = 0.0036f;
+    const float turbulenceSpeed = 0.55f;
 
-    const float neighborRadius = 2.0f * fmaxf(maxRadius, chaosBallRadius) + 28.0f;
+    const float minRadius = 1.5f;
+    const float maxRadius = 2.0f;
+
+    const float neighborRadius = 2.0f * maxRadius + 28.0f;
     const float cellSize = neighborRadius;
 
-    const float solverMaxPushPerIter = 3.2f;
-    const float solverStiffness = 0.86f;
+    const float solverMaxPushPerIter = 3.1f;
+    const float solverStiffness = 0.84f;
 
-    // molecular system
+    // molecules
     const int   MAX_BONDS_PER_PARTICLE = 6;
-    const float bondCreateDist = 17.0f;
-    const float bondMaxRelSpeed = 42.0f;
-    const float bondStiffness = 0.42f;
-    const float maxBondCorrection = 2.4f;
-    const float maxHitForBonding = 26.0f;
-    const float breakStretch = 1.70f;
-    const float breakHitThreshold = 20.0f;
-    const float breakRelativeSpeed = 150.0f;
-    const float hitForceScale = 3.0f;
-    const float hitDecayKeep = 0.92f;
+    const float bondCreateDistFactor   = 1.35f;   // proportional to (r1 + r2)
+    const float bondMaxRelSpeed        = 34.0f;
+    const float bondStiffness          = 0.22f;
+    const float maxBondCorrection      = 1.0f;
+    const float breakStretch           = 1.65f;
+    const float breakRelativeSpeed     = 130.0f;
 
     // rendering
     const float glowRadiusFactor = 3.2f;
@@ -848,10 +762,6 @@ int main(int argc, char** argv) {
     const float lift = 0.010f;
     const float gammaInv = 1.0f / 1.9f;
     const float saturationBoost = 1.35f;
-
-    const float chaosR = 1.00f;
-    const float chaosG = 0.95f;
-    const float chaosB = 0.35f;
 
     const int gridW = (int)ceilf(W / cellSize);
     const int gridH = (int)ceilf(H / cellSize);
@@ -865,19 +775,17 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Grid: %dx%d cells (cellSize=%.1f)\n", gridW, gridH, cellSize);
     fprintf(stderr, "Preview: %s\n", preview ? "ON" : "OFF");
     fprintf(stderr, "Substeps: %d | Solver iterations: %d\n", substeps, solverIters);
-    fprintf(stderr, "Chaos ball radius: %.1f\n", chaosBallRadius);
     fprintf(stderr, "Molecular bonds per particle: %d\n", MAX_BONDS_PER_PARTICLE);
 
     std::mt19937 rng((unsigned)std::chrono::high_resolution_clock::now().time_since_epoch().count());
     std::uniform_real_distribution<float> ux(0.0f, (float)W);
     std::uniform_real_distribution<float> uy(0.0f, (float)H);
-    std::uniform_real_distribution<float> uv(-140.0f, 140.0f);
+    std::uniform_real_distribution<float> uv(-120.0f, 120.0f);
     std::uniform_real_distribution<float> urad(minRadius, maxRadius);
     std::uniform_int_distribution<int> ucol(0, 5);
 
     std::vector<Particle> hP(N);
 
-    // fixed 6-color palette
     const float palette[6][3] = {
         {1.35f, 0.10f, 0.10f}, // red
         {0.10f, 1.35f, 0.10f}, // green
@@ -895,7 +803,6 @@ int main(int argc, char** argv) {
         hP[i].vx = uv(rng);
         hP[i].vy = uv(rng);
         hP[i].rad = urad(rng);
-        hP[i].hit = 0.0f;
 
         hP[i].colorId = ucol(rng);
         hP[i].r = palette[hP[i].colorId][0];
@@ -903,7 +810,6 @@ int main(int argc, char** argv) {
         hP[i].b = palette[hP[i].colorId][2];
     }
 
-    // device buffers
     Particle* dP = nullptr;
     float4* dAccum = nullptr;
     unsigned char* dBGR = nullptr;
@@ -950,18 +856,11 @@ int main(int argc, char** argv) {
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
+    int renderedFrames = 0;
+
     for (int f = 0; f < totalFrames; f++) {
         for (int s = 0; s < substeps; s++) {
             float simTime = ((float)f + ((float)s + 1.0f) / (float)substeps) / (float)fps;
-            float prevTime = simTime - subDt;
-
-            float chaosX, chaosY, chaosRad;
-            float chaosPrevX, chaosPrevY, chaosPrevRad;
-            computeChaosBall(simTime, W, H, chaosX, chaosY, chaosRad);
-            computeChaosBall(prevTime, W, H, chaosPrevX, chaosPrevY, chaosPrevRad);
-
-            float chaosVX = (chaosX - chaosPrevX) / subDt;
-            float chaosVY = (chaosY - chaosPrevY) / subDt;
 
             {
                 int block = 256;
@@ -970,16 +869,20 @@ int main(int argc, char** argv) {
                     dP, N, W, H,
                     subDt,
                     swirlStrength,
-                    damping
+                    damping,
+                    simTime,
+                    turbulenceStrength,
+                    turbulenceScale,
+                    turbulenceSpeed
                 );
             }
 
-            // build grid once for bond creation
             {
                 int block = 256;
                 int grid = (numCells + block - 1) / block;
                 k_clear_cells<<<grid, block, 0, stream>>>(dCellHead, numCells);
             }
+
             {
                 int block = 256;
                 int grid = (N + block - 1) / block;
@@ -990,6 +893,7 @@ int main(int argc, char** argv) {
                     gridW, gridH
                 );
             }
+
             {
                 int block = 256;
                 int grid = (N + block - 1) / block;
@@ -999,9 +903,8 @@ int main(int argc, char** argv) {
                     cellSize, gridW, gridH,
                     dBonds, dBondRest,
                     MAX_BONDS_PER_PARTICLE,
-                    bondCreateDist,
-                    bondMaxRelSpeed,
-                    maxHitForBonding
+                    bondCreateDistFactor,
+                    bondMaxRelSpeed
                 );
             }
 
@@ -1045,13 +948,7 @@ int main(int argc, char** argv) {
                         cellSize,
                         gridW, gridH,
                         solverMaxPushPerIter,
-                        solverStiffness,
-                        chaosX,
-                        chaosY,
-                        chaosRad,
-                        chaosVX,
-                        chaosVY,
-                        hitForceScale
+                        solverStiffness
                     );
                 }
             }
@@ -1064,7 +961,6 @@ int main(int argc, char** argv) {
                     dBonds, dBondRest,
                     MAX_BONDS_PER_PARTICLE,
                     breakStretch,
-                    breakHitThreshold,
                     breakRelativeSpeed
                 );
             }
@@ -1079,19 +975,7 @@ int main(int argc, char** argv) {
                     maxSpeed
                 );
             }
-
-            {
-                int block = 256;
-                int grid = (N + block - 1) / block;
-                k_decay_hit<<<grid, block, 0, stream>>>(
-                    dP, N, hitDecayKeep
-                );
-            }
         }
-
-        float frameTime = (float)f / (float)fps;
-        float chaosX, chaosY, chaosRad;
-        computeChaosBall(frameTime, W, H, chaosX, chaosY, chaosRad);
 
         {
             int block = 256;
@@ -1109,18 +993,6 @@ int main(int argc, char** argv) {
                 glowIntensity,
                 coreEdgeSoftness,
                 whiteCoreBoost
-            );
-        }
-
-        {
-            k_draw_chaos_ball<<<1, 1, 0, stream>>>(
-                dAccum, W, H,
-                chaosX, chaosY, chaosRad,
-                chaosR, chaosG, chaosB,
-                glowRadiusFactor,
-                glowIntensity * 1.45f,
-                coreEdgeSoftness,
-                whiteCoreBoost * 1.15f
             );
         }
 
@@ -1156,6 +1028,8 @@ int main(int argc, char** argv) {
             break;
         }
 
+        renderedFrames = f + 1;
+
         if ((f % 60) == 0) {
             auto tNow = std::chrono::high_resolution_clock::now();
             double elapsed = std::chrono::duration<double>(tNow - t0).count();
@@ -1176,8 +1050,8 @@ int main(int argc, char** argv) {
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double sec = std::chrono::duration<double>(t1 - t0).count();
-    fprintf(stderr, "Done. Time: %.2f s for %d frames (%.2f fps effective)\n",
-            sec, totalFrames, totalFrames / std::max(sec, 1e-9));
+    fprintf(stderr, "Done. Time: %.2f s for %d rendered frames (%.2f fps effective)\n",
+            sec, renderedFrames, renderedFrames / std::max(sec, 1e-9));
 
     if (preview) {
         cv::destroyAllWindows();
