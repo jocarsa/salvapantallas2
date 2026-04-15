@@ -9,6 +9,12 @@
 // - One kinematic "chaos ball" that moves through the scene and perturbs particles
 // - Output MP4 filename includes datetime by default
 //
+// Changes in this version:
+// - Smaller particles
+// - More saturated particle colors
+// - Reduced white washout
+// - Saturation boost in tonemapping
+//
 // Usage:
 //   ./cells_cuda_render_mp4_grid
 //   ./cells_cuda_render_mp4_grid out.mp4
@@ -46,11 +52,11 @@
 } while (0)
 
 struct Particle {
-    float x, y;        // corrected/current position
-    float px, py;      // predicted position
+    float x, y;
+    float px, py;
     float vx, vy;
-    float r, g, b;     // 0..1
-    float rad;         // radius in pixels
+    float r, g, b;
+    float rad;
 };
 
 // ---------------- Device helpers ----------------
@@ -155,7 +161,6 @@ __global__ void k_solve_collisions_pbd(
     float corrX = 0.0f;
     float corrY = 0.0f;
 
-    // particle-particle collisions
     for (int oy = -1; oy <= 1; oy++) {
         int ny = cy + oy;
         if (ny < 0 || ny >= gridH) continue;
@@ -203,7 +208,6 @@ __global__ void k_solve_collisions_pbd(
         }
     }
 
-    // particle-chaosBall collision
     {
         float dx = me.px - chaosX;
         float dy = me.py - chaosY;
@@ -233,7 +237,6 @@ __global__ void k_solve_collisions_pbd(
         }
     }
 
-    // clamp per-iteration correction to avoid violent flicker
     float corrLen2 = corrX * corrX + corrY * corrY;
     float maxPush2 = maxPushPerIter * maxPushPerIter;
     if (corrLen2 > maxPush2) {
@@ -245,7 +248,6 @@ __global__ void k_solve_collisions_pbd(
     me.px += corrX;
     me.py += corrY;
 
-    // wall constraints on predicted position
     float pad = me.rad + 2.0f;
     if (me.px < pad)     me.px = pad;
     if (me.px > W - pad) me.px = W - pad;
@@ -334,7 +336,7 @@ __global__ void k_draw_particles(
             core = clampf(core, 0.0f, 1.0f);
 
             float glow = expf(-d2 * inv2s2);
-            float w = glowIntensity * (0.85f * glow + 2.8f * core);
+            float w = glowIntensity * (0.95f * glow + 3.1f * core);
 
             int idx = y * W + x;
 
@@ -342,7 +344,8 @@ __global__ void k_draw_particles(
             atomicAdd(&accum[idx].y, me.g * w);
             atomicAdd(&accum[idx].z, me.b * w);
 
-            float wWhite = whiteCoreBoost * core * glowIntensity * 3.2f;
+            // reduced white core so colors stay vivid
+            float wWhite = whiteCoreBoost * core * glowIntensity * 1.25f;
             atomicAdd(&accum[idx].x, 1.0f * wWhite);
             atomicAdd(&accum[idx].y, 1.0f * wWhite);
             atomicAdd(&accum[idx].z, 1.0f * wWhite);
@@ -391,7 +394,7 @@ __global__ void k_draw_chaos_ball(
             core = clampf(core, 0.0f, 1.0f);
 
             float glow = expf(-d2 * inv2s2);
-            float w = glowIntensity * (0.90f * glow + 3.2f * core);
+            float w = glowIntensity * (0.90f * glow + 3.0f * core);
 
             int idx = y * W + x;
 
@@ -399,7 +402,7 @@ __global__ void k_draw_chaos_ball(
             atomicAdd(&accum[idx].y, gg * w);
             atomicAdd(&accum[idx].z, bb * w);
 
-            float wWhite = whiteCoreBoost * core * glowIntensity * 4.0f;
+            float wWhite = whiteCoreBoost * core * glowIntensity * 1.35f;
             atomicAdd(&accum[idx].x, 1.0f * wWhite);
             atomicAdd(&accum[idx].y, 1.0f * wWhite);
             atomicAdd(&accum[idx].z, 1.0f * wWhite);
@@ -415,7 +418,8 @@ __global__ void k_tonemap_to_bgr(
     int Npix,
     float exposure,
     float lift,
-    float gammaInv
+    float gammaInv,
+    float saturationBoost
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= Npix) return;
@@ -425,6 +429,12 @@ __global__ void k_tonemap_to_bgr(
     float r = 1.0f - expf(-(a.x + lift) * exposure);
     float g = 1.0f - expf(-(a.y + lift) * exposure);
     float b = 1.0f - expf(-(a.z + lift) * exposure);
+
+    // saturation boost after tonemap
+    float avg = (r + g + b) * (1.0f / 3.0f);
+    r = avg + (r - avg) * saturationBoost;
+    g = avg + (g - avg) * saturationBoost;
+    b = avg + (b - avg) * saturationBoost;
 
     r = powf(clampf(r, 0.0f, 1.0f), gammaInv);
     g = powf(clampf(g, 0.0f, 1.0f), gammaInv);
@@ -558,7 +568,7 @@ int main(int argc, char** argv) {
 
     std::string outPath = makeDefaultOutputFilename();
     int seconds = 36000;
-    int N = 3000;
+    int N = 15000;
     std::string encoder = "nvenc";
     int preview = 1;
 
@@ -571,7 +581,6 @@ int main(int argc, char** argv) {
     const int totalFrames = seconds * fps;
     const float dt = 1.0f / (float)fps;
 
-    // physics
     const int substeps = 4;
     const int solverIters = 3;
     const float subDt = dt / (float)substeps;
@@ -581,7 +590,8 @@ int main(int argc, char** argv) {
     const float velocityDamping = 0.998f;
     const float maxSpeed = 500.0f;
 
-    const float maxRadius = 16.0f;
+    const float minRadius = 2.5f;
+    const float maxRadius = 8.0f;
     const float chaosBallRadius = 64.0f;
 
     const float neighborRadius = 2.0f * fmaxf(maxRadius, chaosBallRadius) + 24.0f;
@@ -590,17 +600,17 @@ int main(int argc, char** argv) {
     const float solverMaxPushPerIter = 3.0f;
     const float solverStiffness = 0.85f;
 
-    // rendering
-    const float glowRadiusFactor = 3.4f;
-    const float glowIntensity = 0.028f;
+    // rendering tuned for more saturated result
+    const float glowRadiusFactor = 3.2f;
+    const float glowIntensity = 0.020f;
     const float coreEdgeSoftness = 0.035f;
-    const float whiteCoreBoost = 2.8f;
+    const float whiteCoreBoost = 0.60f;
 
-    const float exposure = 1.85f;
-    const float lift = 0.020f;
+    const float exposure = 1.95f;
+    const float lift = 0.010f;
     const float gammaInv = 1.0f / 1.9f;
+    const float saturationBoost = 1.35f;
 
-    // chaos ball render color
     const float chaosR = 1.00f;
     const float chaosG = 0.95f;
     const float chaosB = 0.35f;
@@ -618,13 +628,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Substeps: %d | Solver iterations: %d\n", substeps, solverIters);
     fprintf(stderr, "Chaos ball radius: %.1f\n", chaosBallRadius);
 
-    // host init
     std::mt19937 rng((unsigned)std::chrono::high_resolution_clock::now().time_since_epoch().count());
     std::uniform_real_distribution<float> ux(0.0f, (float)W);
     std::uniform_real_distribution<float> uy(0.0f, (float)H);
     std::uniform_real_distribution<float> uv(-140.0f, 140.0f);
     std::uniform_real_distribution<float> uh(0.0f, 1.0f);
-    std::uniform_real_distribution<float> urad(5.5f, maxRadius);
+    std::uniform_real_distribution<float> urad(minRadius, maxRadius);
 
     std::vector<Particle> hP(N);
     for (int i = 0; i < N; i++) {
@@ -637,17 +646,19 @@ int main(int argc, char** argv) {
         hP[i].rad = urad(rng);
 
         float h = uh(rng);
-        float s = 0.88f;
-        float v = 1.00f;
+
+        // maximum saturation, slightly boosted brightness
+        float s = 1.0f;
+        float v = 1.2f;
         hsv2rgb(h, s, v, hP[i].r, hP[i].g, hP[i].b);
 
-        float mixW = 0.10f;
-        hP[i].r = hP[i].r * (1.0f - mixW) + 1.0f * mixW;
-        hP[i].g = hP[i].g * (1.0f - mixW) + 1.0f * mixW;
-        hP[i].b = hP[i].b * (1.0f - mixW) + 1.0f * mixW;
+        // boost particle color intensity
+        const float colorBoost = 1.35f;
+        hP[i].r *= colorBoost;
+        hP[i].g *= colorBoost;
+        hP[i].b *= colorBoost;
     }
 
-    // device buffers
     Particle* dP = nullptr;
     float4* dAccum = nullptr;
     unsigned char* dBGR = nullptr;
@@ -683,7 +694,6 @@ int main(int argc, char** argv) {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     for (int f = 0; f < totalFrames; f++) {
-        // physics: substeps + iterative position solver
         for (int s = 0; s < substeps; s++) {
             float simTime = ((float)f + ((float)s + 1.0f) / (float)substeps) / (float)fps;
 
@@ -753,7 +763,6 @@ int main(int argc, char** argv) {
         float chaosX, chaosY, chaosRad;
         computeChaosBall(frameTime, W, H, chaosX, chaosY, chaosRad);
 
-        // render
         {
             int block = 256;
             int grid = (Npix + block - 1) / block;
@@ -779,9 +788,9 @@ int main(int argc, char** argv) {
                 chaosX, chaosY, chaosRad,
                 chaosR, chaosG, chaosB,
                 glowRadiusFactor,
-                glowIntensity * 1.65f,
+                glowIntensity * 1.45f,
                 coreEdgeSoftness,
-                whiteCoreBoost * 1.35f
+                whiteCoreBoost * 1.15f
             );
         }
 
@@ -790,7 +799,7 @@ int main(int argc, char** argv) {
             int grid = (Npix + block - 1) / block;
             k_tonemap_to_bgr<<<grid, block, 0, stream>>>(
                 dAccum, dBGR, Npix,
-                exposure, lift, gammaInv
+                exposure, lift, gammaInv, saturationBoost
             );
         }
 

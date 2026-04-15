@@ -1,4 +1,5 @@
 // cells_cuda_render_mp4_grid.cu
+//
 // CUDA offline renderer -> FFmpeg MP4 (H.265), with:
 // - Uniform grid neighbor search
 // - Per-particle radius
@@ -6,21 +7,30 @@
 // - 1920x1080 @ 60fps -> mp4 h265
 // - Live framebuffer preview via OpenCV
 // - Stable position-based collision solver with substeps
-// - One kinematic "chaos ball" that moves through the scene and perturbs particles
-// - Output MP4 filename includes datetime by default
+// - Molecular behavior:
+//      * fixed palette: red, green, blue, cyan, magenta, yellow
+//      * same-color particles can bond when close
+//      * bonds act like molecule links
+//      * bonds can break if stretched or shaken too hard
+// - Water-like animated turbulence instead of chaos ball
+//
+// Main fix in this version:
+// - Particle separation is now proportional to particle radii
+// - Bond creation distance is proportional to pair radius sum
+// - Bond rest length is proportional to pair radius sum
+//
+// Compile:
+//   nvcc -O3 -std=c++17 -diag-suppress=611 cells_cuda_render_mp4_grid.cu \
+//     $(pkg-config --cflags --libs opencv4) -o cells_cuda_render_mp4_grid
 //
 // Usage:
 //   ./cells_cuda_render_mp4_grid
 //   ./cells_cuda_render_mp4_grid out.mp4
 //   ./cells_cuda_render_mp4_grid out.mp4 3600
-//   ./cells_cuda_render_mp4_grid out.mp4 3600 3000
-//   ./cells_cuda_render_mp4_grid out.mp4 3600 3000 nvenc
-//   ./cells_cuda_render_mp4_grid out.mp4 3600 3000 libx265
-//   ./cells_cuda_render_mp4_grid out.mp4 3600 3000 nvenc 1
-//   ./cells_cuda_render_mp4_grid out.mp4 3600 3000 nvenc 0
-//
-// Compile:
-//   nvcc -O3 -std=c++17 cells_cuda_render_mp4_grid.cu `pkg-config --cflags --libs opencv4` -o cells_cuda_render_mp4_grid
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000 nvenc
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000 libx265
+//   ./cells_cuda_render_mp4_grid out.mp4 3600 12000 nvenc 1
 
 #include <opencv2/opencv.hpp>
 #include <cuda_runtime.h>
@@ -46,11 +56,12 @@
 } while (0)
 
 struct Particle {
-    float x, y;        // corrected/current position
-    float px, py;      // predicted position
+    float x, y;
+    float px, py;
     float vx, vy;
-    float r, g, b;     // 0..1
-    float rad;         // radius in pixels
+    float r, g, b;
+    float rad;
+    int   colorId;
 };
 
 // ---------------- Device helpers ----------------
@@ -65,6 +76,88 @@ __device__ __forceinline__ float smoothstep(float e0, float e1, float x) {
 
 __device__ __forceinline__ int cellIndex(int cx, int cy, int gridW) {
     return cy * gridW + cx;
+}
+
+__device__ __forceinline__ float fract_local(float x) {
+    return x - floorf(x);
+}
+
+__device__ __forceinline__ float hash2f(float x, float y) {
+    return fract_local(sinf(x * 127.1f + y * 311.7f) * 43758.5453123f);
+}
+
+__device__ float valueNoise(float x, float y) {
+    float ix = floorf(x);
+    float iy = floorf(y);
+    float fx = x - ix;
+    float fy = y - iy;
+
+    float a = hash2f(ix,     iy);
+    float b = hash2f(ix + 1, iy);
+    float c = hash2f(ix,     iy + 1);
+    float d = hash2f(ix + 1, iy + 1);
+
+    float ux = fx * fx * (3.0f - 2.0f * fx);
+    float uy = fy * fy * (3.0f - 2.0f * fy);
+
+    float ab = a + (b - a) * ux;
+    float cd = c + (d - c) * ux;
+    return ab + (cd - ab) * uy;
+}
+
+__device__ float fbm(float x, float y) {
+    float v = 0.0f;
+    float a = 0.5f;
+    float f = 1.0f;
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        v += a * valueNoise(x * f, y * f);
+        f *= 2.0f;
+        a *= 0.5f;
+    }
+    return v;
+}
+
+__device__ __forceinline__ bool try_insert_one_side(
+    int* bonds, float* rest,
+    int base, int maxBonds,
+    int other, float restLen
+) {
+    for (int k = 0; k < maxBonds; k++) {
+        int idx = base + k;
+        int old = atomicCAS(&bonds[idx], -1, other);
+        if (old == -1) {
+            rest[idx] = restLen;
+            return true;
+        }
+        if (old == other) {
+            return true;
+        }
+    }
+    return false;
+}
+
+__device__ __forceinline__ void remove_one_side(
+    int* bonds, float* rest,
+    int base, int maxBonds,
+    int other
+) {
+    for (int k = 0; k < maxBonds; k++) {
+        int idx = base + k;
+        if (bonds[idx] == other) {
+            bonds[idx] = -1;
+            rest[idx]  = 0.0f;
+        }
+    }
+}
+
+__device__ __forceinline__ bool already_bonded(
+    const int* bonds, int base, int maxBonds, int other
+) {
+    for (int k = 0; k < maxBonds; k++) {
+        if (bonds[base + k] == other) return true;
+    }
+    return false;
 }
 
 // ---------------- Grid kernels ----------------
@@ -93,18 +186,201 @@ __global__ void k_build_grid(
     cy = max(0, min(gridH - 1, cy));
 
     int c = cellIndex(cx, cy, gridW);
-
     int old = atomicExch(&cellHead[c], i);
     next[i] = old;
 }
 
-// ---------------- Physics kernels ----------------
+// ---------------- Bonds ----------------
+__global__ void k_init_bonds(int* bonds, float* rest, int totalSlots) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= totalSlots) return;
+    bonds[i] = -1;
+    rest[i]  = 0.0f;
+}
+
+__global__ void k_try_create_bonds(
+    Particle* p, int n,
+    const int* cellHead, const int* next,
+    float cellSize, int gridW, int gridH,
+    int* bonds, float* rest,
+    int maxBondsPerParticle,
+    float createDistFactor,
+    float maxRelSpeed
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    Particle me = p[i];
+    int baseI = i * maxBondsPerParticle;
+
+    int cx = (int)floorf(me.px / cellSize);
+    int cy = (int)floorf(me.py / cellSize);
+    cx = max(0, min(gridW - 1, cx));
+    cy = max(0, min(gridH - 1, cy));
+
+    for (int oy = -1; oy <= 1; oy++) {
+        int ny = cy + oy;
+        if (ny < 0 || ny >= gridH) continue;
+
+        for (int ox = -1; ox <= 1; ox++) {
+            int nx = cx + ox;
+            if (nx < 0 || nx >= gridW) continue;
+
+            int c = cellIndex(nx, ny, gridW);
+            int j = cellHead[c];
+
+            while (j != -1) {
+                if (j > i) {
+                    Particle pj = p[j];
+                    if (pj.colorId == me.colorId) {
+                        float dx = pj.px - me.px;
+                        float dy = pj.py - me.py;
+                        float d2 = dx * dx + dy * dy;
+
+                        float pairTouchDist  = me.rad + pj.rad;
+                        float pairCreateDist = pairTouchDist * createDistFactor;
+                        float createDist2    = pairCreateDist * pairCreateDist;
+
+                        if (d2 < createDist2) {
+                            float rvx = pj.vx - me.vx;
+                            float rvy = pj.vy - me.vy;
+                            float relV2 = rvx * rvx + rvy * rvy;
+
+                            if (relV2 <= maxRelSpeed * maxRelSpeed) {
+                                if (!already_bonded(bonds, baseI, maxBondsPerParticle, j)) {
+                                    int baseJ = j * maxBondsPerParticle;
+
+                                    float restLen = pairTouchDist * 1.02f;
+
+                                    bool okI = try_insert_one_side(
+                                        bonds, rest, baseI, maxBondsPerParticle, j, restLen
+                                    );
+                                    bool okJ = try_insert_one_side(
+                                        bonds, rest, baseJ, maxBondsPerParticle, i, restLen
+                                    );
+
+                                    if (!(okI && okJ)) {
+                                        remove_one_side(bonds, rest, baseI, maxBondsPerParticle, j);
+                                        remove_one_side(bonds, rest, baseJ, maxBondsPerParticle, i);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                j = next[j];
+            }
+        }
+    }
+}
+
+__global__ void k_solve_bonds(
+    Particle* p, int n,
+    const int* bonds, const float* rest,
+    int maxBondsPerParticle,
+    float bondStiffness,
+    float maxBondCorrection
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    Particle me = p[i];
+    int base = i * maxBondsPerParticle;
+
+    float corrX = 0.0f;
+    float corrY = 0.0f;
+
+    for (int k = 0; k < maxBondsPerParticle; k++) {
+        int j = bonds[base + k];
+        if (j < 0) continue;
+
+        Particle pj = p[j];
+        float restLen = rest[base + k];
+
+        float dx = pj.px - me.px;
+        float dy = pj.py - me.py;
+        float d2 = dx * dx + dy * dy;
+        float d  = sqrtf(d2 + 1e-8f);
+        if (d < 1e-6f) continue;
+
+        float nx = dx / d;
+        float ny = dy / d;
+        float delta = d - restLen;
+
+        float push = 0.5f * bondStiffness * delta;
+        corrX += nx * push;
+        corrY += ny * push;
+    }
+
+    float c2 = corrX * corrX + corrY * corrY;
+    float m2 = maxBondCorrection * maxBondCorrection;
+    if (c2 > m2) {
+        float invL = rsqrtf(c2 + 1e-8f);
+        corrX *= maxBondCorrection * invL;
+        corrY *= maxBondCorrection * invL;
+    }
+
+    me.px += corrX;
+    me.py += corrY;
+    p[i] = me;
+}
+
+__global__ void k_break_bonds(
+    Particle* p, int n,
+    int* bonds, float* rest,
+    int maxBondsPerParticle,
+    float breakStretch,
+    float breakRelativeSpeed
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    Particle me = p[i];
+    int baseI = i * maxBondsPerParticle;
+
+    for (int k = 0; k < maxBondsPerParticle; k++) {
+        int idxI = baseI + k;
+        int j = bonds[idxI];
+        if (j < 0) continue;
+        if (j < i) continue;
+
+        Particle pj = p[j];
+        float restLen = rest[idxI];
+
+        float dx = pj.px - me.px;
+        float dy = pj.py - me.py;
+        float d = sqrtf(dx * dx + dy * dy + 1e-8f);
+
+        float stretchRatio = (restLen > 1e-6f) ? d / restLen : 1.0f;
+
+        float rvx = pj.vx - me.vx;
+        float rvy = pj.vy - me.vy;
+        float relSpeed = sqrtf(rvx * rvx + rvy * rvy + 1e-8f);
+
+        bool breakIt = false;
+        if (stretchRatio > breakStretch) breakIt = true;
+        if (relSpeed > breakRelativeSpeed) breakIt = true;
+
+        if (breakIt) {
+            int baseJ = j * maxBondsPerParticle;
+            bonds[idxI] = -1;
+            rest[idxI] = 0.0f;
+            remove_one_side(bonds, rest, baseJ, maxBondsPerParticle, i);
+        }
+    }
+}
+
+// ---------------- Physics ----------------
 __global__ void k_predict_particles(
     Particle* p, int n,
     int W, int H,
     float dt,
     float swirlStrength,
-    float damping
+    float damping,
+    float time,
+    float turbulenceStrength,
+    float turbulenceScale,
+    float turbulenceSpeed
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -120,6 +396,24 @@ __global__ void k_predict_particles(
 
     float ax = (-dyC * invLenC) * swirlStrength;
     float ay = ( dxC * invLenC) * swirlStrength;
+
+    float nx = me.x * turbulenceScale;
+    float ny = me.y * turbulenceScale;
+    float tt = time * turbulenceSpeed;
+
+    float e = 0.75f;
+
+    float n1 = fbm(nx + tt * 0.70f,          ny - tt * 0.45f);
+    float n2 = fbm(nx + 19.3f + tt * 0.31f,  ny + 7.1f + tt * 0.63f);
+
+    float gx = fbm(nx + e, ny + tt) - fbm(nx - e, ny + tt);
+    float gy = fbm(nx, ny + e + tt) - fbm(nx, ny - e + tt);
+
+    float curlX =  gy;
+    float curlY = -gx;
+
+    ax += turbulenceStrength * (1.8f * (n1 - 0.5f) + 1.2f * curlX + 0.7f * (n2 - 0.5f));
+    ay += turbulenceStrength * (1.8f * (n2 - 0.5f) + 1.2f * curlY + 0.7f * (n1 - 0.5f));
 
     me.vx = (me.vx + ax * dt) * damping;
     me.vy = (me.vy + ay * dt) * damping;
@@ -137,10 +431,7 @@ __global__ void k_solve_collisions_pbd(
     float cellSize,
     int gridW, int gridH,
     float maxPushPerIter,
-    float stiffness,
-    float chaosX,
-    float chaosY,
-    float chaosR
+    float stiffness
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -155,7 +446,6 @@ __global__ void k_solve_collisions_pbd(
     float corrX = 0.0f;
     float corrY = 0.0f;
 
-    // particle-particle collisions
     for (int oy = -1; oy <= 1; oy++) {
         int ny = cy + oy;
         if (ny < 0 || ny >= gridH) continue;
@@ -203,37 +493,6 @@ __global__ void k_solve_collisions_pbd(
         }
     }
 
-    // particle-chaosBall collision
-    {
-        float dx = me.px - chaosX;
-        float dy = me.py - chaosY;
-        float d2 = dx * dx + dy * dy;
-
-        float minDist = me.rad + chaosR;
-        float minDist2 = minDist * minDist;
-
-        if (d2 < minDist2) {
-            float d = sqrtf(d2 + 1e-8f);
-
-            float nxn, nyn;
-            if (d > 1e-6f) {
-                nxn = dx / d;
-                nyn = dy / d;
-            } else {
-                nxn = 1.0f;
-                nyn = 0.0f;
-                d = minDist;
-            }
-
-            float overlap = minDist - d;
-            float push = 1.0f * stiffness * overlap;
-
-            corrX += nxn * push;
-            corrY += nyn * push;
-        }
-    }
-
-    // clamp per-iteration correction to avoid violent flicker
     float corrLen2 = corrX * corrX + corrY * corrY;
     float maxPush2 = maxPushPerIter * maxPushPerIter;
     if (corrLen2 > maxPush2) {
@@ -245,7 +504,6 @@ __global__ void k_solve_collisions_pbd(
     me.px += corrX;
     me.py += corrY;
 
-    // wall constraints on predicted position
     float pad = me.rad + 2.0f;
     if (me.px < pad)     me.px = pad;
     if (me.px > W - pad) me.px = W - pad;
@@ -334,7 +592,7 @@ __global__ void k_draw_particles(
             core = clampf(core, 0.0f, 1.0f);
 
             float glow = expf(-d2 * inv2s2);
-            float w = glowIntensity * (0.85f * glow + 2.8f * core);
+            float w = glowIntensity * (0.95f * glow + 3.1f * core);
 
             int idx = y * W + x;
 
@@ -342,64 +600,7 @@ __global__ void k_draw_particles(
             atomicAdd(&accum[idx].y, me.g * w);
             atomicAdd(&accum[idx].z, me.b * w);
 
-            float wWhite = whiteCoreBoost * core * glowIntensity * 3.2f;
-            atomicAdd(&accum[idx].x, 1.0f * wWhite);
-            atomicAdd(&accum[idx].y, 1.0f * wWhite);
-            atomicAdd(&accum[idx].z, 1.0f * wWhite);
-
-            atomicAdd(&accum[idx].w, w + wWhite);
-        }
-    }
-}
-
-__global__ void k_draw_chaos_ball(
-    float4* accum, int W, int H,
-    float cx, float cy, float rad,
-    float rr, float gg, float bb,
-    float glowRadiusFactor,
-    float glowIntensity,
-    float coreEdgeSoftness,
-    float whiteCoreBoost
-) {
-    float R = rad * glowRadiusFactor;
-    R = fminf(R, 120.0f);
-
-    int x0 = (int)floorf(cx - R);
-    int x1 = (int)ceilf (cx + R);
-    int y0 = (int)floorf(cy - R);
-    int y1 = (int)ceilf (cy + R);
-
-    x0 = max(0, x0); y0 = max(0, y0);
-    x1 = min(W - 1, x1); y1 = min(H - 1, y1);
-
-    float sigma = 0.33f * R;
-    float inv2s2 = 1.0f / (2.0f * sigma * sigma + 1e-6f);
-
-    float coreIn  = rad * (1.0f - coreEdgeSoftness);
-    float coreOut = rad * (1.0f + coreEdgeSoftness);
-
-    for (int y = y0; y <= y1; y++) {
-        for (int x = x0; x <= x1; x++) {
-            float dx = (x + 0.5f) - cx;
-            float dy = (y + 0.5f) - cy;
-            float d2 = dx * dx + dy * dy;
-            if (d2 > R * R) continue;
-
-            float d = sqrtf(d2 + 1e-6f);
-
-            float core = 1.0f - smoothstep(coreIn, coreOut, d);
-            core = clampf(core, 0.0f, 1.0f);
-
-            float glow = expf(-d2 * inv2s2);
-            float w = glowIntensity * (0.90f * glow + 3.2f * core);
-
-            int idx = y * W + x;
-
-            atomicAdd(&accum[idx].x, rr * w);
-            atomicAdd(&accum[idx].y, gg * w);
-            atomicAdd(&accum[idx].z, bb * w);
-
-            float wWhite = whiteCoreBoost * core * glowIntensity * 4.0f;
+            float wWhite = whiteCoreBoost * core * glowIntensity * 1.25f;
             atomicAdd(&accum[idx].x, 1.0f * wWhite);
             atomicAdd(&accum[idx].y, 1.0f * wWhite);
             atomicAdd(&accum[idx].z, 1.0f * wWhite);
@@ -415,7 +616,8 @@ __global__ void k_tonemap_to_bgr(
     int Npix,
     float exposure,
     float lift,
-    float gammaInv
+    float gammaInv,
+    float saturationBoost
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= Npix) return;
@@ -426,6 +628,11 @@ __global__ void k_tonemap_to_bgr(
     float g = 1.0f - expf(-(a.y + lift) * exposure);
     float b = 1.0f - expf(-(a.z + lift) * exposure);
 
+    float avg = (r + g + b) * (1.0f / 3.0f);
+    r = avg + (r - avg) * saturationBoost;
+    g = avg + (g - avg) * saturationBoost;
+    b = avg + (b - avg) * saturationBoost;
+
     r = powf(clampf(r, 0.0f, 1.0f), gammaInv);
     g = powf(clampf(g, 0.0f, 1.0f), gammaInv);
     b = powf(clampf(b, 0.0f, 1.0f), gammaInv);
@@ -433,63 +640,6 @@ __global__ void k_tonemap_to_bgr(
     outBGR[3 * i + 0] = (unsigned char)lrintf(255.0f * b);
     outBGR[3 * i + 1] = (unsigned char)lrintf(255.0f * g);
     outBGR[3 * i + 2] = (unsigned char)lrintf(255.0f * r);
-}
-
-// ---------------- HSV palette ----------------
-static void hsv2rgb(float h, float s, float v, float& r, float& g, float& b) {
-    h = fmodf(h, 1.0f);
-    float c = v * s;
-    float x = c * (1.0f - fabsf(fmodf(h * 6.0f, 2.0f) - 1.0f));
-    float m = v - c;
-    float rp = 0, gp = 0, bp = 0;
-    int seg = (int)floorf(h * 6.0f);
-
-    switch (seg) {
-        case 0: rp = c; gp = x; bp = 0; break;
-        case 1: rp = x; gp = c; bp = 0; break;
-        case 2: rp = 0; gp = c; bp = x; break;
-        case 3: rp = 0; gp = x; bp = c; break;
-        case 4: rp = x; gp = 0; bp = c; break;
-        default: rp = c; gp = 0; bp = x; break;
-    }
-
-    r = rp + m;
-    g = gp + m;
-    b = bp + m;
-}
-
-// ---------------- Chaos ball motion ----------------
-static void computeChaosBall(
-    float t, int W, int H,
-    float& x, float& y, float& rad
-) {
-    rad = 64.0f;
-
-    const float cx = 0.5f * W;
-    const float cy = 0.5f * H;
-
-    const float orbitRx = 0.30f * W;
-    const float orbitRy = 0.25f * H;
-
-    const float baseAng  = 0.38f * t;
-    const float wobble1  = 0.65f * sinf(0.91f * t);
-    const float wobble2  = 0.45f * cosf(1.37f * t);
-    const float ang      = baseAng + wobble1 + wobble2;
-
-    const float rxMod = orbitRx * (0.82f + 0.18f * sinf(0.53f * t));
-    const float ryMod = orbitRy * (0.82f + 0.18f * cosf(0.71f * t));
-
-    const float smallX = 120.0f * cosf(2.17f * t + 0.7f);
-    const float smallY =  95.0f * sinf(1.83f * t + 1.2f);
-
-    x = cx + cosf(ang) * rxMod + smallX;
-    y = cy + sinf(ang * 1.07f) * ryMod + smallY;
-
-    float pad = rad + 8.0f;
-    if (x < pad) x = pad;
-    if (x > W - pad) x = W - pad;
-    if (y < pad) y = pad;
-    if (y > H - pad) y = H - pad;
 }
 
 // ---------------- Datetime output filename ----------------
@@ -506,7 +656,6 @@ static std::string makeDefaultOutputFilename() {
 
     char datetimeBuf[64];
     std::strftime(datetimeBuf, sizeof(datetimeBuf), "%Y%m%d_%H%M%S", &tm_now);
-
     return std::string("out_") + datetimeBuf + ".mp4";
 }
 
@@ -558,7 +707,7 @@ int main(int argc, char** argv) {
 
     std::string outPath = makeDefaultOutputFilename();
     int seconds = 36000;
-    int N = 3000;
+    int N = 146000;
     std::string encoder = "nvenc";
     int preview = 1;
 
@@ -576,39 +725,49 @@ int main(int argc, char** argv) {
     const int solverIters = 3;
     const float subDt = dt / (float)substeps;
 
-    const float swirlStrength = 18.0f;
-    const float damping = 0.9995f;
+    const float swirlStrength = 13.0f;
+    const float damping = 0.9991f;
     const float velocityDamping = 0.998f;
-    const float maxSpeed = 500.0f;
+    const float maxSpeed = 440.0f;
 
-    const float maxRadius = 16.0f;
-    const float chaosBallRadius = 64.0f;
+    const float turbulenceStrength = 240.0f;
+    const float turbulenceScale = 0.0036f;
+    const float turbulenceSpeed = 0.55f;
 
-    const float neighborRadius = 2.0f * fmaxf(maxRadius, chaosBallRadius) + 24.0f;
+    const float minRadius = 1.5f;
+    const float maxRadius = 2.0f;
+
+    const float neighborRadius = 2.0f * maxRadius + 28.0f;
     const float cellSize = neighborRadius;
 
-    const float solverMaxPushPerIter = 3.0f;
-    const float solverStiffness = 0.85f;
+    const float solverMaxPushPerIter = 3.1f;
+    const float solverStiffness = 0.84f;
+
+    // molecules
+    const int   MAX_BONDS_PER_PARTICLE = 6;
+    const float bondCreateDistFactor   = 1.35f;   // proportional to (r1 + r2)
+    const float bondMaxRelSpeed        = 34.0f;
+    const float bondStiffness          = 0.22f;
+    const float maxBondCorrection      = 1.0f;
+    const float breakStretch           = 1.65f;
+    const float breakRelativeSpeed     = 130.0f;
 
     // rendering
-    const float glowRadiusFactor = 3.4f;
-    const float glowIntensity = 0.028f;
+    const float glowRadiusFactor = 3.2f;
+    const float glowIntensity = 0.040f;
     const float coreEdgeSoftness = 0.035f;
-    const float whiteCoreBoost = 2.8f;
+    const float whiteCoreBoost = 1.0f;
 
-    const float exposure = 1.85f;
-    const float lift = 0.020f;
+    const float exposure = 2.95f;
+    const float lift = 0.010f;
     const float gammaInv = 1.0f / 1.9f;
-
-    // chaos ball render color
-    const float chaosR = 1.00f;
-    const float chaosG = 0.95f;
-    const float chaosB = 0.35f;
+    const float saturationBoost = 1.35f;
 
     const int gridW = (int)ceilf(W / cellSize);
     const int gridH = (int)ceilf(H / cellSize);
     const int numCells = gridW * gridH;
     const int Npix = W * H;
+    const int totalBondSlots = N * MAX_BONDS_PER_PARTICLE;
 
     fprintf(stderr, "Output: %s\n", outPath.c_str());
     fprintf(stderr, "Seconds: %d | FPS: %d | Frames: %d\n", seconds, fps, totalFrames);
@@ -616,17 +775,26 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Grid: %dx%d cells (cellSize=%.1f)\n", gridW, gridH, cellSize);
     fprintf(stderr, "Preview: %s\n", preview ? "ON" : "OFF");
     fprintf(stderr, "Substeps: %d | Solver iterations: %d\n", substeps, solverIters);
-    fprintf(stderr, "Chaos ball radius: %.1f\n", chaosBallRadius);
+    fprintf(stderr, "Molecular bonds per particle: %d\n", MAX_BONDS_PER_PARTICLE);
 
-    // host init
     std::mt19937 rng((unsigned)std::chrono::high_resolution_clock::now().time_since_epoch().count());
     std::uniform_real_distribution<float> ux(0.0f, (float)W);
     std::uniform_real_distribution<float> uy(0.0f, (float)H);
-    std::uniform_real_distribution<float> uv(-140.0f, 140.0f);
-    std::uniform_real_distribution<float> uh(0.0f, 1.0f);
-    std::uniform_real_distribution<float> urad(5.5f, maxRadius);
+    std::uniform_real_distribution<float> uv(-120.0f, 120.0f);
+    std::uniform_real_distribution<float> urad(minRadius, maxRadius);
+    std::uniform_int_distribution<int> ucol(0, 5);
 
     std::vector<Particle> hP(N);
+
+    const float palette[6][3] = {
+        {1.35f, 0.10f, 0.10f}, // red
+        {0.10f, 1.35f, 0.10f}, // green
+        {0.10f, 0.45f, 1.35f}, // blue
+        {0.10f, 1.25f, 1.25f}, // cyan
+        {1.25f, 0.10f, 1.25f}, // magenta
+        {1.35f, 1.25f, 0.10f}  // yellow
+    };
+
     for (int i = 0; i < N; i++) {
         hP[i].x = ux(rng);
         hP[i].y = uy(rng);
@@ -636,30 +804,36 @@ int main(int argc, char** argv) {
         hP[i].vy = uv(rng);
         hP[i].rad = urad(rng);
 
-        float h = uh(rng);
-        float s = 0.88f;
-        float v = 1.00f;
-        hsv2rgb(h, s, v, hP[i].r, hP[i].g, hP[i].b);
-
-        float mixW = 0.10f;
-        hP[i].r = hP[i].r * (1.0f - mixW) + 1.0f * mixW;
-        hP[i].g = hP[i].g * (1.0f - mixW) + 1.0f * mixW;
-        hP[i].b = hP[i].b * (1.0f - mixW) + 1.0f * mixW;
+        hP[i].colorId = ucol(rng);
+        hP[i].r = palette[hP[i].colorId][0];
+        hP[i].g = palette[hP[i].colorId][1];
+        hP[i].b = palette[hP[i].colorId][2];
     }
 
-    // device buffers
     Particle* dP = nullptr;
     float4* dAccum = nullptr;
     unsigned char* dBGR = nullptr;
     int* dCellHead = nullptr;
     int* dNext = nullptr;
+    int* dBonds = nullptr;
+    float* dBondRest = nullptr;
 
     CUDA_CHECK(cudaMalloc(&dP, sizeof(Particle) * (size_t)N));
     CUDA_CHECK(cudaMalloc(&dAccum, sizeof(float4) * (size_t)Npix));
     CUDA_CHECK(cudaMalloc(&dBGR, sizeof(unsigned char) * (size_t)Npix * 3));
     CUDA_CHECK(cudaMalloc(&dCellHead, sizeof(int) * (size_t)numCells));
     CUDA_CHECK(cudaMalloc(&dNext, sizeof(int) * (size_t)N));
+    CUDA_CHECK(cudaMalloc(&dBonds, sizeof(int) * (size_t)totalBondSlots));
+    CUDA_CHECK(cudaMalloc(&dBondRest, sizeof(float) * (size_t)totalBondSlots));
+
     CUDA_CHECK(cudaMemcpy(dP, hP.data(), sizeof(Particle) * (size_t)N, cudaMemcpyHostToDevice));
+
+    {
+        int block = 256;
+        int grid = (totalBondSlots + block - 1) / block;
+        k_init_bonds<<<grid, block>>>(dBonds, dBondRest, totalBondSlots);
+        CUDA_CHECK(cudaGetLastError());
+    }
 
     unsigned char* hFramePinned = nullptr;
     CUDA_CHECK(cudaMallocHost(&hFramePinned, (size_t)Npix * 3));
@@ -682,13 +856,11 @@ int main(int argc, char** argv) {
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
+    int renderedFrames = 0;
+
     for (int f = 0; f < totalFrames; f++) {
-        // physics: substeps + iterative position solver
         for (int s = 0; s < substeps; s++) {
             float simTime = ((float)f + ((float)s + 1.0f) / (float)substeps) / (float)fps;
-
-            float chaosX, chaosY, chaosRad;
-            computeChaosBall(simTime, W, H, chaosX, chaosY, chaosRad);
 
             {
                 int block = 256;
@@ -697,11 +869,58 @@ int main(int argc, char** argv) {
                     dP, N, W, H,
                     subDt,
                     swirlStrength,
-                    damping
+                    damping,
+                    simTime,
+                    turbulenceStrength,
+                    turbulenceScale,
+                    turbulenceSpeed
+                );
+            }
+
+            {
+                int block = 256;
+                int grid = (numCells + block - 1) / block;
+                k_clear_cells<<<grid, block, 0, stream>>>(dCellHead, numCells);
+            }
+
+            {
+                int block = 256;
+                int grid = (N + block - 1) / block;
+                k_build_grid<<<grid, block, 0, stream>>>(
+                    dP, N,
+                    dCellHead, dNext,
+                    cellSize,
+                    gridW, gridH
+                );
+            }
+
+            {
+                int block = 256;
+                int grid = (N + block - 1) / block;
+                k_try_create_bonds<<<grid, block, 0, stream>>>(
+                    dP, N,
+                    dCellHead, dNext,
+                    cellSize, gridW, gridH,
+                    dBonds, dBondRest,
+                    MAX_BONDS_PER_PARTICLE,
+                    bondCreateDistFactor,
+                    bondMaxRelSpeed
                 );
             }
 
             for (int iter = 0; iter < solverIters; iter++) {
+                {
+                    int block = 256;
+                    int grid = (N + block - 1) / block;
+                    k_solve_bonds<<<grid, block, 0, stream>>>(
+                        dP, N,
+                        dBonds, dBondRest,
+                        MAX_BONDS_PER_PARTICLE,
+                        bondStiffness,
+                        maxBondCorrection
+                    );
+                }
+
                 {
                     int block = 256;
                     int grid = (numCells + block - 1) / block;
@@ -729,12 +948,21 @@ int main(int argc, char** argv) {
                         cellSize,
                         gridW, gridH,
                         solverMaxPushPerIter,
-                        solverStiffness,
-                        chaosX,
-                        chaosY,
-                        chaosRad
+                        solverStiffness
                     );
                 }
+            }
+
+            {
+                int block = 256;
+                int grid = (N + block - 1) / block;
+                k_break_bonds<<<grid, block, 0, stream>>>(
+                    dP, N,
+                    dBonds, dBondRest,
+                    MAX_BONDS_PER_PARTICLE,
+                    breakStretch,
+                    breakRelativeSpeed
+                );
             }
 
             {
@@ -749,11 +977,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        float frameTime = (float)f / (float)fps;
-        float chaosX, chaosY, chaosRad;
-        computeChaosBall(frameTime, W, H, chaosX, chaosY, chaosRad);
-
-        // render
         {
             int block = 256;
             int grid = (Npix + block - 1) / block;
@@ -774,23 +997,11 @@ int main(int argc, char** argv) {
         }
 
         {
-            k_draw_chaos_ball<<<1, 1, 0, stream>>>(
-                dAccum, W, H,
-                chaosX, chaosY, chaosRad,
-                chaosR, chaosG, chaosB,
-                glowRadiusFactor,
-                glowIntensity * 1.65f,
-                coreEdgeSoftness,
-                whiteCoreBoost * 1.35f
-            );
-        }
-
-        {
             int block = 256;
             int grid = (Npix + block - 1) / block;
             k_tonemap_to_bgr<<<grid, block, 0, stream>>>(
                 dAccum, dBGR, Npix,
-                exposure, lift, gammaInv
+                exposure, lift, gammaInv, saturationBoost
             );
         }
 
@@ -817,6 +1028,8 @@ int main(int argc, char** argv) {
             break;
         }
 
+        renderedFrames = f + 1;
+
         if ((f % 60) == 0) {
             auto tNow = std::chrono::high_resolution_clock::now();
             double elapsed = std::chrono::duration<double>(tNow - t0).count();
@@ -837,8 +1050,8 @@ int main(int argc, char** argv) {
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double sec = std::chrono::duration<double>(t1 - t0).count();
-    fprintf(stderr, "Done. Time: %.2f s for %d frames (%.2f fps effective)\n",
-            sec, totalFrames, totalFrames / std::max(sec, 1e-9));
+    fprintf(stderr, "Done. Time: %.2f s for %d rendered frames (%.2f fps effective)\n",
+            sec, renderedFrames, renderedFrames / std::max(sec, 1e-9));
 
     if (preview) {
         cv::destroyAllWindows();
@@ -852,6 +1065,8 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaFree(dBGR));
     CUDA_CHECK(cudaFree(dCellHead));
     CUDA_CHECK(cudaFree(dNext));
+    CUDA_CHECK(cudaFree(dBonds));
+    CUDA_CHECK(cudaFree(dBondRest));
 
     return 0;
 }
