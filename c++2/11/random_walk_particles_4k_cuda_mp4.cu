@@ -246,8 +246,8 @@ __global__ void k_compose_to_bgr(
 
 int main(int argc, char** argv){
     // Output settings (4K offline)
-    const int W = 3840;
-    const int H = 2160;
+    const int W = 1920;
+    const int H = 1080;
     const int fps = 60;
 
     std::string outPath = "out.mp4";

@@ -252,8 +252,8 @@ static void compute_center_of_gravity(
 }
 
 int main(int argc, char** argv) {
-    int W = 1280;
-    int H = 720;
+    int W = 1920;
+    int H = 1080;
     const int fps = 60;
     std::string outPath = "out.mp4";
     int seconds = 36000;
