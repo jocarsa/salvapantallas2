@@ -20,7 +20,7 @@
 #define HEIGHT 1080
 
 #define FPS 60
-#define DURACION 600
+#define DURACION 36000
 #define TOTAL_FRAMES (FPS * DURACION)
 
 #define NUM_LADOS 64
@@ -1174,15 +1174,24 @@ int main() {
         dibujar_luz_cpu(frame);
 
         // -------------------------------------------------
-        // DISPLAY / SAVE
-        // -------------------------------------------------
+// DISPLAY / SAVE
+// -------------------------------------------------
 
-        cv::imshow(
-            "Frame",
-            frame
-        );
+if (contador % 100 == 0 || contador == TOTAL_FRAMES - 1) {
+    cv::imshow(
+        "Frame",
+        frame
+    );
 
-        out.write(frame);
+    int key =
+        cv::waitKey(1) & 0xFF;
+
+    if (key == 27 || key == 'q') {
+        break;
+    }
+}
+
+out.write(frame);
 
         // -------------------------------------------------
         // PROGRESS BAR
