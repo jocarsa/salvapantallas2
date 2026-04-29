@@ -12,12 +12,15 @@
 #include <ctime>
 #include <algorithm>
 #include <cstdlib>
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 #define WIDTH 1920
 #define HEIGHT 1080
 
 #define FPS 60
-#define DURACION 3600
+#define DURACION 600
 #define TOTAL_FRAMES (FPS * DURACION)
 
 #define NUM_LADOS 64
@@ -26,24 +29,19 @@
 #define VELOCIDAD_EXPANSION 1.045f
 #define RADIO_INICIAL 8.0f
 
-// ---------------------------------------------------------
-// SURFACE NOISE
-// ---------------------------------------------------------
-
 #define NOISE_STRENGTH 0.22f
-#define NOISE_SCALE 1.7f
+#define NOISE_SCALE 10.7f
 #define NOISE_OCTAVES 4
 
-// ---------------------------------------------------------
-// LIGHT
-// ---------------------------------------------------------
+#define LIGHT_REACH 520.0f
+#define LIGHT_FALLOFF_POWER 3.2f
+#define LIGHT_INTENSITY 1.85f
+#define SPECULAR_INTENSITY 120.0f
 
-#define LIGHT_RADIUS 460.0f
-#define LIGHT_FALLOFF_POWER 2.6f
-#define LIGHT_INTENSITY 360.0f
-#define SPECULAR_INTENSITY 280.0f
-
-// =========================================================
+#define WIREFRAME_R 255
+#define WIREFRAME_G 255
+#define WIREFRAME_B 255
+#define WIREFRAME_BOOST 127
 
 struct Vec2 {
     float x, y;
@@ -65,13 +63,9 @@ struct FaceGPU {
     float x2, y2;
     float x3, y3;
     float x4, y4;
-
     unsigned char shade;
-
     int depthPriority;
 };
-
-// =========================================================
 
 float centrox = WIDTH * 0.5f;
 float centroy = HEIGHT * 0.5f;
@@ -80,30 +74,19 @@ std::vector<Capa> capas;
 
 float cursorx = centrox;
 float cursory = centroy;
-
 float vx = 0.0f;
 float vy = 0.0f;
-
 float angulo_global = 0.0f;
 
 int ring_id_counter = 0;
 
-// =========================================================
-// LIGHT STATE
-// =========================================================
-
 float light_angle = 0.0f;
 float light_angle_speed = 0.014f;
-
 float light_radial = 0.58f;
 float light_depth = 0.52f;
-
 float light_screen_x = centrox;
 float light_screen_y = centroy;
-
 float radio_luz_visual = 10.0f;
-
-// =========================================================
 
 unsigned char* d_frame = nullptr;
 int* d_depth = nullptr;
@@ -124,11 +107,7 @@ Vec3 make_vec3(float x, float y, float z) {
 }
 
 Vec3 sub3(Vec3 a, Vec3 b) {
-    return {
-        a.x - b.x,
-        a.y - b.y,
-        a.z - b.z
-    };
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
 }
 
 Vec3 cross3(Vec3 a, Vec3 b) {
@@ -150,15 +129,100 @@ Vec3 normalize3(Vec3 v) {
         return {0.0f, 0.0f, 0.0f};
     }
 
-    return {
-        v.x / n,
-        v.y / n,
-        v.z / n
-    };
+    return {v.x / n, v.y / n, v.z / n};
+}
+
+std::string format_time(double seconds) {
+    int s = int(seconds);
+
+    if (s < 0) {
+        s = 0;
+    }
+
+    int h = s / 3600;
+    int m = (s % 3600) / 60;
+    int sec = s % 60;
+
+    std::ostringstream oss;
+
+    if (h > 0) {
+        oss
+            << h << "h "
+            << std::setw(2) << std::setfill('0') << m << "m "
+            << std::setw(2) << std::setfill('0') << sec << "s";
+    } else {
+        oss
+            << m << "m "
+            << std::setw(2) << std::setfill('0') << sec << "s";
+    }
+
+    return oss.str();
+}
+
+void print_progress_bar(
+    int current,
+    int total,
+    double elapsed,
+    const std::string& filename
+) {
+    const int bar_width = 42;
+
+    double progress = double(current) / double(total);
+    progress = clampf(float(progress), 0.0f, 1.0f);
+
+    int filled = int(progress * bar_width);
+
+    double render_fps = current / std::max(0.001, elapsed);
+    double eta = (total - current) / std::max(0.001, render_fps);
+
+    std::cout << "\r";
+    std::cout << "Renderizando ";
+    std::cout << "[";
+
+    for (int i = 0; i < bar_width; i++) {
+        if (i < filled) {
+            std::cout << "█";
+        } else if (i == filled) {
+            std::cout << "▓";
+        } else {
+            std::cout << "░";
+        }
+    }
+
+    std::cout << "] ";
+
+    std::cout
+        << std::fixed
+        << std::setprecision(1)
+        << progress * 100.0
+        << "%  ";
+
+    std::cout
+        << current
+        << "/"
+        << total
+        << " frames  ";
+
+    std::cout
+        << std::setprecision(1)
+        << render_fps
+        << " fps  ";
+
+    std::cout
+        << "ETA "
+        << format_time(eta)
+        << "  ";
+
+    std::cout
+        << "-> "
+        << filename
+        << "      ";
+
+    std::cout.flush();
 }
 
 // =========================================================
-// FRACTAL NOISE
+// NOISE
 // =========================================================
 
 float hash_noise(float x, float y, float z) {
@@ -193,13 +257,8 @@ float fractal_noise(float x, float y, float z) {
     return total / norm;
 }
 
-// =========================================================
-// RING NOISE
-// =========================================================
-
 void crear_ruido_capa(Capa& capa, int ring_id) {
     for (int j = 0; j < NUM_LADOS; j++) {
-
         float a =
             (float(j) / float(NUM_LADOS)) *
             2.0f *
@@ -217,12 +276,7 @@ void crear_ruido_capa(Capa& capa, int ring_id) {
     }
 }
 
-// =========================================================
-// RING POINT
-// =========================================================
-
 Vec2 punto_capa(const Capa& capa, int i) {
-
     float a =
         (float(i) / float(NUM_LADOS)) *
         2.0f *
@@ -240,11 +294,10 @@ Vec2 punto_capa(const Capa& capa, int i) {
 }
 
 // =========================================================
-// LIGHT UPDATE
+// LIGHT
 // =========================================================
 
 void actualizar_luz(float t) {
-
     light_angle += light_angle_speed;
 
     light_radial =
@@ -274,6 +327,7 @@ void actualizar_luz(float t) {
         float(capas.size() - 1);
 
     int idx0 = int(std::floor(pos));
+
     int idx1 = std::min(
         idx0 + 1,
         int(capas.size() - 1)
@@ -319,10 +373,7 @@ void actualizar_luz(float t) {
 // FACE GENERATION
 // =========================================================
 
-void construir_faces(
-    std::vector<FaceGPU>& faces
-) {
-
+void construir_faces(std::vector<FaceGPU>& faces) {
     faces.clear();
 
     if (capas.size() < 2) {
@@ -340,7 +391,6 @@ void construir_faces(
     int ncapas = int(capas.size());
 
     for (int i = ncapas - 1; i > 0; i--) {
-
         Capa& capa_ext = capas[i];
         Capa& capa_int = capas[i - 1];
 
@@ -353,14 +403,12 @@ void construir_faces(
             float(ncapas - 1);
 
         for (int j = 0; j < NUM_LADOS; j++) {
-
             int j2 =
                 (j + 1) %
                 NUM_LADOS;
 
             Vec2 p1 = punto_capa(capa_ext, j);
             Vec2 p2 = punto_capa(capa_ext, j2);
-
             Vec2 p3 = punto_capa(capa_int, j2);
             Vec2 p4 = punto_capa(capa_int, j);
 
@@ -370,7 +418,8 @@ void construir_faces(
             };
 
             float face_depth =
-                (depth_ext + depth_int) * 0.5f;
+                (depth_ext + depth_int) *
+                0.5f;
 
             Vec3 face_pos = make_vec3(
                 center.x,
@@ -406,14 +455,9 @@ void construir_faces(
                     dot3(normal, light_dir)
                 );
 
-            float dx =
-                light_pos.x - face_pos.x;
-
-            float dy =
-                light_pos.y - face_pos.y;
-
-            float dz =
-                light_pos.z - face_pos.z;
+            float dx = light_pos.x - face_pos.x;
+            float dy = light_pos.y - face_pos.y;
+            float dz = light_pos.z - face_pos.z;
 
             float dist =
                 std::sqrt(
@@ -422,22 +466,32 @@ void construir_faces(
                     dz * dz
                 );
 
-            float attenuation =
-                1.0f -
-                dist / LIGHT_RADIUS;
-
-            attenuation =
+            float normalized_dist =
                 clampf(
-                    attenuation,
+                    dist / LIGHT_REACH,
                     0.0f,
                     1.0f
                 );
+
+            float attenuation =
+                1.0f - normalized_dist;
 
             attenuation =
                 std::pow(
                     attenuation,
                     LIGHT_FALLOFF_POWER
                 );
+
+            float inverse_square =
+                1.0f /
+                (
+                    1.0f +
+                    normalized_dist *
+                    normalized_dist *
+                    8.0f
+                );
+
+            attenuation *= inverse_square;
 
             Vec3 view_dir =
                 make_vec3(
@@ -446,22 +500,14 @@ void construir_faces(
                     -1.0f
                 );
 
+            float ndotl =
+                dot3(normal, light_dir);
+
             Vec3 reflect_dir =
                 normalize3({
-                    2.0f *
-                    dot3(normal, light_dir) *
-                    normal.x -
-                    light_dir.x,
-
-                    2.0f *
-                    dot3(normal, light_dir) *
-                    normal.y -
-                    light_dir.y,
-
-                    2.0f *
-                    dot3(normal, light_dir) *
-                    normal.z -
-                    light_dir.z
+                    2.0f * ndotl * normal.x - light_dir.x,
+                    2.0f * ndotl * normal.y - light_dir.y,
+                    2.0f * ndotl * normal.z - light_dir.z
                 });
 
             float specular =
@@ -473,18 +519,18 @@ void construir_faces(
                     28.0f
                 );
 
-            float ambient =
-                6.0f +
-                face_depth * 16.0f;
+            float ambient = 4.0f;
 
             float light =
                 diffuse *
                 attenuation *
+                255.0f *
                 LIGHT_INTENSITY +
 
                 specular *
                 attenuation *
-                SPECULAR_INTENSITY;
+                SPECULAR_INTENSITY *
+                LIGHT_INTENSITY;
 
             int shade =
                 int(
@@ -521,7 +567,7 @@ void construir_faces(
 }
 
 // =========================================================
-// CUDA
+// CUDA KERNELS
 // =========================================================
 
 __device__ float edge_func(
@@ -550,7 +596,6 @@ __device__ bool point_in_tri(
     float cx,
     float cy
 ) {
-
     float e1 =
         edge_func(
             ax, ay,
@@ -589,7 +634,6 @@ __global__ void clear_kernel(
     unsigned char* frame,
     int* depth
 ) {
-
     int idx =
         blockIdx.x *
         blockDim.x +
@@ -616,7 +660,6 @@ __global__ void raster_faces_kernel(
     FaceGPU* faces,
     int face_count
 ) {
-
     int face_id = blockIdx.x;
 
     if (face_id >= face_count) {
@@ -650,16 +693,28 @@ __global__ void raster_faces_kernel(
         );
 
     int ix0 =
-        max(0, int(floorf(minx)));
+        max(
+            0,
+            int(floorf(minx))
+        );
 
     int iy0 =
-        max(0, int(floorf(miny)));
+        max(
+            0,
+            int(floorf(miny))
+        );
 
     int ix1 =
-        min(WIDTH - 1, int(ceilf(maxx)));
+        min(
+            WIDTH - 1,
+            int(ceilf(maxx))
+        );
 
     int iy1 =
-        min(HEIGHT - 1, int(ceilf(maxy)));
+        min(
+            HEIGHT - 1,
+            int(ceilf(maxy))
+        );
 
     int bw =
         ix1 - ix0 + 1;
@@ -672,16 +727,13 @@ __global__ void raster_faces_kernel(
     }
 
     int total = bw * bh;
-
-    int local =
-        threadIdx.x;
+    int local = threadIdx.x;
 
     for (
         int k = local;
         k < total;
         k += blockDim.x
     ) {
-
         int lx = k % bw;
         int ly = k / bw;
 
@@ -720,46 +772,33 @@ __global__ void raster_faces_kernel(
             );
 
         if (f.depthPriority >= old) {
-
-            frame[pixel * 3 + 0] =
-                f.shade;
-
-            frame[pixel * 3 + 1] =
-                f.shade;
-
-            frame[pixel * 3 + 2] =
-                f.shade;
+            frame[pixel * 3 + 0] = f.shade;
+            frame[pixel * 3 + 1] = f.shade;
+            frame[pixel * 3 + 2] = f.shade;
         }
     }
 }
 
 // =========================================================
-// CPU WIREFRAME
+// CPU DRAWING
 // =========================================================
 
 void dibujar_wireframe_cpu(
     cv::Mat& img,
     const std::vector<FaceGPU>& faces
 ) {
-
     for (const auto& f : faces) {
-
-        int edge =
-            int(f.shade) + 45;
-
-        edge =
-            int(
-                clampf(
-                    float(edge),
-                    25.0f,
-                    255.0f
-                )
+        float factor =
+            clampf(
+                (float(f.shade) + float(WIREFRAME_BOOST)) / 255.0f,
+                0.0f,
+                1.0f
             );
 
         cv::Scalar color(
-            edge,
-            edge,
-            edge
+            int(WIREFRAME_B * factor),
+            int(WIREFRAME_G * factor),
+            int(WIREFRAME_R * factor)
         );
 
         cv::Point p1(
@@ -820,12 +859,7 @@ void dibujar_wireframe_cpu(
     }
 }
 
-// =========================================================
-// DRAW LIGHT
-// =========================================================
-
 void dibujar_luz_cpu(cv::Mat& img) {
-
     float perspective_size =
         1.60f -
         light_depth * 1.25f;
@@ -863,7 +897,6 @@ void dibujar_luz_cpu(cv::Mat& img) {
 // =========================================================
 
 int main() {
-
     std::srand(
         unsigned(std::time(nullptr))
     );
@@ -940,12 +973,16 @@ int main() {
     auto start =
         std::chrono::high_resolution_clock::now();
 
+    std::cout
+        << "Generando vídeo: "
+        << filename
+        << std::endl;
+
     for (
         int contador = 0;
         contador < TOTAL_FRAMES;
         contador++
     ) {
-
         auto now =
             std::chrono::high_resolution_clock::now();
 
@@ -975,17 +1012,21 @@ int main() {
         float margen_x = 420.0f;
         float margen_y = 260.0f;
 
-        if (cursorx < centrox - margen_x)
+        if (cursorx < centrox - margen_x) {
             vx += 1.8f;
+        }
 
-        if (cursorx > centrox + margen_x)
+        if (cursorx > centrox + margen_x) {
             vx -= 1.8f;
+        }
 
-        if (cursory < centroy - margen_y)
+        if (cursory < centroy - margen_y) {
             vy += 1.8f;
+        }
 
-        if (cursory > centroy + margen_y)
+        if (cursory > centroy + margen_y) {
             vy -= 1.8f;
+        }
 
         angulo_global += 0.012f;
 
@@ -997,7 +1038,6 @@ int main() {
 
         nueva.x = cursorx;
         nueva.y = cursory;
-
         nueva.radio = RADIO_INICIAL;
         nueva.angulo = angulo_global;
 
@@ -1042,7 +1082,7 @@ int main() {
         construir_faces(faces);
 
         // -------------------------------------------------
-        // CLEAR
+        // CLEAR GPU FRAME
         // -------------------------------------------------
 
         int total_pixels =
@@ -1063,11 +1103,10 @@ int main() {
         );
 
         // -------------------------------------------------
-        // RASTER
+        // RASTER GPU
         // -------------------------------------------------
 
         if (!faces.empty()) {
-
             cudaMemcpy(
                 d_faces,
                 faces.data(),
@@ -1135,7 +1174,7 @@ int main() {
         dibujar_luz_cpu(frame);
 
         // -------------------------------------------------
-        // DISPLAY
+        // DISPLAY / SAVE
         // -------------------------------------------------
 
         cv::imshow(
@@ -1145,6 +1184,30 @@ int main() {
 
         out.write(frame);
 
+        // -------------------------------------------------
+        // PROGRESS BAR
+        // -------------------------------------------------
+
+        auto progress_now =
+            std::chrono::high_resolution_clock::now();
+
+        double elapsed =
+            std::chrono::duration<double>(
+                progress_now - start
+            ).count();
+
+        if (
+            contador % 10 == 0 ||
+            contador == TOTAL_FRAMES - 1
+        ) {
+            print_progress_bar(
+                contador + 1,
+                TOTAL_FRAMES,
+                elapsed,
+                filename
+            );
+        }
+
         int key =
             cv::waitKey(1) & 0xFF;
 
@@ -1153,7 +1216,7 @@ int main() {
         }
     }
 
-    // -----------------------------------------------------
+    std::cout << std::endl;
 
     out.release();
 
