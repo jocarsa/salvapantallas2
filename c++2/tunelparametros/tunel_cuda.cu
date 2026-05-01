@@ -12,36 +12,62 @@
 #include <ctime>
 #include <algorithm>
 #include <cstdlib>
-#include <iomanip>
-#include <sstream>
+#include <fstream>
 #include <string>
 
-#define WIDTH 1920
-#define HEIGHT 1080
+// =========================================================
+// LIMITES INTERNOS
+// =========================================================
 
-#define FPS 60
-#define DURACION 3600
-#define TOTAL_FRAMES (FPS * DURACION)
+#define MAX_NUM_LADOS 256
 
-#define NUM_LADOS 64
-#define MAX_CAPAS 260
+// =========================================================
+// PARAMETROS
+// =========================================================
 
-#define VELOCIDAD_EXPANSION 1.045f
-#define RADIO_INICIAL 8.0f
+struct Params {
+    int width = 1920;
+    int height = 1080;
+    int fps = 60;
+    int duracion = 3600;
 
-#define NOISE_STRENGTH 0.22f
-#define NOISE_SCALE 10.7f
-#define NOISE_OCTAVES 4
+    int num_lados = 64;
+    int max_capas = 260;
 
-#define LIGHT_REACH 520.0f
-#define LIGHT_FALLOFF_POWER 3.2f
-#define LIGHT_INTENSITY 1.85f
-#define SPECULAR_INTENSITY 120.0f
+    float velocidad_expansion = 1.045f;
+    float radio_inicial = 8.0f;
 
-#define WIREFRAME_R 255
-#define WIREFRAME_G 255
-#define WIREFRAME_B 255
-#define WIREFRAME_BOOST 127
+    float noise_strength = 0.22f;
+    float noise_scale = 1.7f;
+    int noise_octaves = 4;
+
+    float light_radius = 460.0f;
+    float light_falloff_power = 2.6f;
+    float light_intensity = 360.0f;
+    float specular_intensity = 280.0f;
+
+    float light_angle_speed = 0.014f;
+    float light_radial_base = 0.56f;
+    float light_radial_amp = 0.18f;
+    float light_depth_base = 0.50f;
+    float light_depth_amp = 0.32f;
+    float light_radial_freq = 0.65f;
+    float light_depth_freq = 0.27f;
+
+    float tunnel_rotation_speed = 0.012f;
+    float movement_randomness = 1.2f;
+    float movement_damping = 0.97f;
+
+    float margin_x = 420.0f;
+    float margin_y = 260.0f;
+    float return_force = 1.8f;
+
+    int preview_frame = 100;
+};
+
+Params params;
+
+// =========================================================
 
 struct Vec2 {
     float x, y;
@@ -55,7 +81,7 @@ struct Capa {
     float x, y;
     float radio;
     float angulo;
-    float noise[NUM_LADOS];
+    float noise[MAX_NUM_LADOS];
 };
 
 struct FaceGPU {
@@ -63,36 +89,52 @@ struct FaceGPU {
     float x2, y2;
     float x3, y3;
     float x4, y4;
+
     unsigned char shade;
+
     int depthPriority;
 };
 
-float centrox = WIDTH * 0.5f;
-float centroy = HEIGHT * 0.5f;
+// =========================================================
+// GLOBAL STATE
+// =========================================================
+
+float centrox = 0.0f;
+float centroy = 0.0f;
 
 std::vector<Capa> capas;
 
-float cursorx = centrox;
-float cursory = centroy;
+float cursorx = 0.0f;
+float cursory = 0.0f;
+
 float vx = 0.0f;
 float vy = 0.0f;
+
 float angulo_global = 0.0f;
 
 int ring_id_counter = 0;
 
+// =========================================================
+// LIGHT STATE
+// =========================================================
+
 float light_angle = 0.0f;
-float light_angle_speed = 0.014f;
+
 float light_radial = 0.58f;
 float light_depth = 0.52f;
-float light_screen_x = centrox;
-float light_screen_y = centroy;
+
+float light_screen_x = 0.0f;
+float light_screen_y = 0.0f;
+
 float radio_luz_visual = 10.0f;
+
+// =========================================================
+// CUDA MEMORY
+// =========================================================
 
 unsigned char* d_frame = nullptr;
 int* d_depth = nullptr;
 FaceGPU* d_faces = nullptr;
-
-int max_faces = MAX_CAPAS * NUM_LADOS;
 
 // =========================================================
 // UTILS
@@ -107,7 +149,11 @@ Vec3 make_vec3(float x, float y, float z) {
 }
 
 Vec3 sub3(Vec3 a, Vec3 b) {
-    return {a.x - b.x, a.y - b.y, a.z - b.z};
+    return {
+        a.x - b.x,
+        a.y - b.y,
+        a.z - b.z
+    };
 }
 
 Vec3 cross3(Vec3 a, Vec3 b) {
@@ -129,100 +175,130 @@ Vec3 normalize3(Vec3 v) {
         return {0.0f, 0.0f, 0.0f};
     }
 
-    return {v.x / n, v.y / n, v.z / n};
+    return {
+        v.x / n,
+        v.y / n,
+        v.z / n
+    };
 }
 
-std::string format_time(double seconds) {
-    int s = int(seconds);
+std::string trim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
 
-    if (s < 0) {
-        s = 0;
+    if (a == std::string::npos) {
+        return "";
     }
 
-    int h = s / 3600;
-    int m = (s % 3600) / 60;
-    int sec = s % 60;
-
-    std::ostringstream oss;
-
-    if (h > 0) {
-        oss
-            << h << "h "
-            << std::setw(2) << std::setfill('0') << m << "m "
-            << std::setw(2) << std::setfill('0') << sec << "s";
-    } else {
-        oss
-            << m << "m "
-            << std::setw(2) << std::setfill('0') << sec << "s";
-    }
-
-    return oss.str();
-}
-
-void print_progress_bar(
-    int current,
-    int total,
-    double elapsed,
-    const std::string& filename
-) {
-    const int bar_width = 42;
-
-    double progress = double(current) / double(total);
-    progress = clampf(float(progress), 0.0f, 1.0f);
-
-    int filled = int(progress * bar_width);
-
-    double render_fps = current / std::max(0.001, elapsed);
-    double eta = (total - current) / std::max(0.001, render_fps);
-
-    std::cout << "\r";
-    std::cout << "Renderizando ";
-    std::cout << "[";
-
-    for (int i = 0; i < bar_width; i++) {
-        if (i < filled) {
-            std::cout << "█";
-        } else if (i == filled) {
-            std::cout << "▓";
-        } else {
-            std::cout << "░";
-        }
-    }
-
-    std::cout << "] ";
-
-    std::cout
-        << std::fixed
-        << std::setprecision(1)
-        << progress * 100.0
-        << "%  ";
-
-    std::cout
-        << current
-        << "/"
-        << total
-        << " frames  ";
-
-    std::cout
-        << std::setprecision(1)
-        << render_fps
-        << " fps  ";
-
-    std::cout
-        << "ETA "
-        << format_time(eta)
-        << "  ";
-
-    std::cout
-        << "-> "
-        << filename
-        << "      ";
-
-    std::cout.flush();
+    return s.substr(a, b - a + 1);
 }
 
 // =========================================================
-// NOISE
+// LOAD PARAMS
+// =========================================================
+
+void cargar_params(const std::string& filename) {
+    std::ifstream file(filename);
+
+    if (!file.is_open()) {
+        std::cerr
+            << "No se pudo abrir el archivo de parametros: "
+            << filename
+            << std::endl;
+
+        std::cerr
+            << "Se usaran los parametros por defecto."
+            << std::endl;
+
+        return;
+    }
+
+    std::string line;
+
+    while (std::getline(file, line)) {
+        line = trim(line);
+
+        if (line.empty()) continue;
+        if (line[0] == '#') continue;
+
+        size_t pos = line.find('=');
+
+        if (pos == std::string::npos) continue;
+
+        std::string key = trim(line.substr(0, pos));
+        std::string value = trim(line.substr(pos + 1));
+
+        auto to_i = [&]() {
+            return std::stoi(value);
+        };
+
+        auto to_f = [&]() {
+            return std::stof(value);
+        };
+
+        try {
+            if (key == "width") params.width = to_i();
+            else if (key == "height") params.height = to_i();
+            else if (key == "fps") params.fps = to_i();
+            else if (key == "duracion") params.duracion = to_i();
+
+            else if (key == "num_lados") params.num_lados = to_i();
+            else if (key == "max_capas") params.max_capas = to_i();
+
+            else if (key == "velocidad_expansion") params.velocidad_expansion = to_f();
+            else if (key == "radio_inicial") params.radio_inicial = to_f();
+
+            else if (key == "noise_strength") params.noise_strength = to_f();
+            else if (key == "noise_scale") params.noise_scale = to_f();
+            else if (key == "noise_octaves") params.noise_octaves = to_i();
+
+            else if (key == "light_radius") params.light_radius = to_f();
+            else if (key == "light_falloff_power") params.light_falloff_power = to_f();
+            else if (key == "light_intensity") params.light_intensity = to_f();
+            else if (key == "specular_intensity") params.specular_intensity = to_f();
+
+            else if (key == "light_angle_speed") params.light_angle_speed = to_f();
+            else if (key == "light_radial_base") params.light_radial_base = to_f();
+            else if (key == "light_radial_amp") params.light_radial_amp = to_f();
+            else if (key == "light_depth_base") params.light_depth_base = to_f();
+            else if (key == "light_depth_amp") params.light_depth_amp = to_f();
+            else if (key == "light_radial_freq") params.light_radial_freq = to_f();
+            else if (key == "light_depth_freq") params.light_depth_freq = to_f();
+
+            else if (key == "tunnel_rotation_speed") params.tunnel_rotation_speed = to_f();
+            else if (key == "movement_randomness") params.movement_randomness = to_f();
+            else if (key == "movement_damping") params.movement_damping = to_f();
+
+            else if (key == "margin_x") params.margin_x = to_f();
+            else if (key == "margin_y") params.margin_y = to_f();
+            else if (key == "return_force") params.return_force = to_f();
+
+            else if (key == "preview_frame") params.preview_frame = to_i();
+        }
+        catch (...) {
+            std::cerr
+                << "Parametro ignorado por valor invalido: "
+                << key
+                << "="
+                << value
+                << std::endl;
+        }
+    }
+
+    params.width = std::max(64, params.width);
+    params.height = std::max(64, params.height);
+    params.fps = std::max(1, params.fps);
+    params.duracion = std::max(1, params.duracion);
+
+    params.num_lados = std::max(3, std::min(params.num_lados, MAX_NUM_LADOS));
+    params.max_capas = std::max(2, params.max_capas);
+
+    params.noise_octaves = std::max(1, std::min(params.noise_octaves, 8));
+    params.preview_frame = std::max(0, params.preview_frame);
+}
+
+// =========================================================
+// FRACTAL NOISE
 // =========================================================
 
 float hash_noise(float x, float y, float z) {
@@ -241,7 +317,7 @@ float fractal_noise(float x, float y, float z) {
     float freq = 1.0f;
     float norm = 0.0f;
 
-    for (int i = 0; i < NOISE_OCTAVES; i++) {
+    for (int i = 0; i < params.noise_octaves; i++) {
         total += hash_noise(
             x * freq,
             y * freq,
@@ -257,28 +333,36 @@ float fractal_noise(float x, float y, float z) {
     return total / norm;
 }
 
+// =========================================================
+// RING NOISE
+// =========================================================
+
 void crear_ruido_capa(Capa& capa, int ring_id) {
-    for (int j = 0; j < NUM_LADOS; j++) {
+    for (int j = 0; j < params.num_lados; j++) {
         float a =
-            (float(j) / float(NUM_LADOS)) *
+            (float(j) / float(params.num_lados)) *
             2.0f *
             float(M_PI);
 
-        float x = std::cos(a) * NOISE_SCALE;
-        float y = std::sin(a) * NOISE_SCALE;
+        float x = std::cos(a) * params.noise_scale;
+        float y = std::sin(a) * params.noise_scale;
         float z = ring_id * 0.08f;
 
         float n = fractal_noise(x, y, z);
 
         capa.noise[j] =
             (n - 0.5f) *
-            NOISE_STRENGTH;
+            params.noise_strength;
     }
 }
 
+// =========================================================
+// RING POINT
+// =========================================================
+
 Vec2 punto_capa(const Capa& capa, int i) {
     float a =
-        (float(i) / float(NUM_LADOS)) *
+        (float(i) / float(params.num_lados)) *
         2.0f *
         float(M_PI) +
         capa.angulo;
@@ -294,27 +378,27 @@ Vec2 punto_capa(const Capa& capa, int i) {
 }
 
 // =========================================================
-// LIGHT
+// LIGHT UPDATE
 // =========================================================
 
 void actualizar_luz(float t) {
-    light_angle += light_angle_speed;
+    light_angle += params.light_angle_speed;
 
     light_radial =
-        0.56f +
-        0.18f *
-        std::sin(t * 0.65f);
+        params.light_radial_base +
+        params.light_radial_amp *
+        std::sin(t * params.light_radial_freq);
 
     light_depth =
-        0.50f +
-        0.32f *
-        std::sin(t * 0.27f + 1.2f);
+        params.light_depth_base +
+        params.light_depth_amp *
+        std::sin(t * params.light_depth_freq + 1.2f);
 
     light_radial =
-        clampf(light_radial, 0.25f, 0.82f);
+        clampf(light_radial, 0.05f, 0.95f);
 
     light_depth =
-        clampf(light_depth, 0.12f, 0.90f);
+        clampf(light_depth, 0.05f, 0.95f);
 
     if (capas.size() < 2) {
         light_screen_x = centrox;
@@ -327,7 +411,6 @@ void actualizar_luz(float t) {
         float(capas.size() - 1);
 
     int idx0 = int(std::floor(pos));
-
     int idx1 = std::min(
         idx0 + 1,
         int(capas.size() - 1)
@@ -373,7 +456,9 @@ void actualizar_luz(float t) {
 // FACE GENERATION
 // =========================================================
 
-void construir_faces(std::vector<FaceGPU>& faces) {
+void construir_faces(
+    std::vector<FaceGPU>& faces
+) {
     faces.clear();
 
     if (capas.size() < 2) {
@@ -402,13 +487,14 @@ void construir_faces(std::vector<FaceGPU>& faces) {
             float(i - 1) /
             float(ncapas - 1);
 
-        for (int j = 0; j < NUM_LADOS; j++) {
+        for (int j = 0; j < params.num_lados; j++) {
             int j2 =
                 (j + 1) %
-                NUM_LADOS;
+                params.num_lados;
 
             Vec2 p1 = punto_capa(capa_ext, j);
             Vec2 p2 = punto_capa(capa_ext, j2);
+
             Vec2 p3 = punto_capa(capa_int, j2);
             Vec2 p4 = punto_capa(capa_int, j);
 
@@ -418,8 +504,7 @@ void construir_faces(std::vector<FaceGPU>& faces) {
             };
 
             float face_depth =
-                (depth_ext + depth_int) *
-                0.5f;
+                (depth_ext + depth_int) * 0.5f;
 
             Vec3 face_pos = make_vec3(
                 center.x,
@@ -455,9 +540,14 @@ void construir_faces(std::vector<FaceGPU>& faces) {
                     dot3(normal, light_dir)
                 );
 
-            float dx = light_pos.x - face_pos.x;
-            float dy = light_pos.y - face_pos.y;
-            float dz = light_pos.z - face_pos.z;
+            float dx =
+                light_pos.x - face_pos.x;
+
+            float dy =
+                light_pos.y - face_pos.y;
+
+            float dz =
+                light_pos.z - face_pos.z;
 
             float dist =
                 std::sqrt(
@@ -466,32 +556,22 @@ void construir_faces(std::vector<FaceGPU>& faces) {
                     dz * dz
                 );
 
-            float normalized_dist =
+            float attenuation =
+                1.0f -
+                dist / params.light_radius;
+
+            attenuation =
                 clampf(
-                    dist / LIGHT_REACH,
+                    attenuation,
                     0.0f,
                     1.0f
                 );
 
-            float attenuation =
-                1.0f - normalized_dist;
-
             attenuation =
                 std::pow(
                     attenuation,
-                    LIGHT_FALLOFF_POWER
+                    params.light_falloff_power
                 );
-
-            float inverse_square =
-                1.0f /
-                (
-                    1.0f +
-                    normalized_dist *
-                    normalized_dist *
-                    8.0f
-                );
-
-            attenuation *= inverse_square;
 
             Vec3 view_dir =
                 make_vec3(
@@ -519,18 +599,18 @@ void construir_faces(std::vector<FaceGPU>& faces) {
                     28.0f
                 );
 
-            float ambient = 4.0f;
+            float ambient =
+                6.0f +
+                face_depth * 16.0f;
 
             float light =
                 diffuse *
                 attenuation *
-                255.0f *
-                LIGHT_INTENSITY +
+                params.light_intensity +
 
                 specular *
                 attenuation *
-                SPECULAR_INTENSITY *
-                LIGHT_INTENSITY;
+                params.specular_intensity;
 
             int shade =
                 int(
@@ -567,7 +647,7 @@ void construir_faces(std::vector<FaceGPU>& faces) {
 }
 
 // =========================================================
-// CUDA KERNELS
+// CUDA
 // =========================================================
 
 __device__ float edge_func(
@@ -632,7 +712,9 @@ __device__ bool point_in_tri(
 
 __global__ void clear_kernel(
     unsigned char* frame,
-    int* depth
+    int* depth,
+    int width,
+    int height
 ) {
     int idx =
         blockIdx.x *
@@ -640,7 +722,7 @@ __global__ void clear_kernel(
         threadIdx.x;
 
     int total =
-        WIDTH * HEIGHT;
+        width * height;
 
     if (idx >= total) {
         return;
@@ -658,7 +740,9 @@ __global__ void raster_faces_kernel(
     unsigned char* frame,
     int* depth,
     FaceGPU* faces,
-    int face_count
+    int face_count,
+    int width,
+    int height
 ) {
     int face_id = blockIdx.x;
 
@@ -693,28 +777,16 @@ __global__ void raster_faces_kernel(
         );
 
     int ix0 =
-        max(
-            0,
-            int(floorf(minx))
-        );
+        max(0, int(floorf(minx)));
 
     int iy0 =
-        max(
-            0,
-            int(floorf(miny))
-        );
+        max(0, int(floorf(miny)));
 
     int ix1 =
-        min(
-            WIDTH - 1,
-            int(ceilf(maxx))
-        );
+        min(width - 1, int(ceilf(maxx)));
 
     int iy1 =
-        min(
-            HEIGHT - 1,
-            int(ceilf(maxy))
-        );
+        min(height - 1, int(ceilf(maxy)));
 
     int bw =
         ix1 - ix0 + 1;
@@ -727,7 +799,9 @@ __global__ void raster_faces_kernel(
     }
 
     int total = bw * bh;
-    int local = threadIdx.x;
+
+    int local =
+        threadIdx.x;
 
     for (
         int k = local;
@@ -763,7 +837,7 @@ __global__ void raster_faces_kernel(
         }
 
         int pixel =
-            y * WIDTH + x;
+            y * width + x;
 
         int old =
             atomicMax(
@@ -772,15 +846,20 @@ __global__ void raster_faces_kernel(
             );
 
         if (f.depthPriority >= old) {
-            frame[pixel * 3 + 0] = f.shade;
-            frame[pixel * 3 + 1] = f.shade;
-            frame[pixel * 3 + 2] = f.shade;
+            frame[pixel * 3 + 0] =
+                f.shade;
+
+            frame[pixel * 3 + 1] =
+                f.shade;
+
+            frame[pixel * 3 + 2] =
+                f.shade;
         }
     }
 }
 
 // =========================================================
-// CPU DRAWING
+// CPU WIREFRAME
 // =========================================================
 
 void dibujar_wireframe_cpu(
@@ -788,17 +867,22 @@ void dibujar_wireframe_cpu(
     const std::vector<FaceGPU>& faces
 ) {
     for (const auto& f : faces) {
-        float factor =
-            clampf(
-                (float(f.shade) + float(WIREFRAME_BOOST)) / 255.0f,
-                0.0f,
-                1.0f
+        int edge =
+            int(f.shade) + 45;
+
+        edge =
+            int(
+                clampf(
+                    float(edge),
+                    25.0f,
+                    255.0f
+                )
             );
 
         cv::Scalar color(
-            int(WIREFRAME_B * factor),
-            int(WIREFRAME_G * factor),
-            int(WIREFRAME_R * factor)
+            edge,
+            edge,
+            edge
         );
 
         cv::Point p1(
@@ -859,6 +943,10 @@ void dibujar_wireframe_cpu(
     }
 }
 
+// =========================================================
+// DRAW LIGHT
+// =========================================================
+
 void dibujar_luz_cpu(cv::Mat& img) {
     float perspective_size =
         1.60f -
@@ -893,22 +981,138 @@ void dibujar_luz_cpu(cv::Mat& img) {
 }
 
 // =========================================================
+// SIMULATION STEP
+// =========================================================
+
+void simular_paso() {
+    vx +=
+        ((float(std::rand()) / RAND_MAX) - 0.5f) *
+        params.movement_randomness;
+
+    vy +=
+        ((float(std::rand()) / RAND_MAX) - 0.5f) *
+        params.movement_randomness;
+
+    vx *= params.movement_damping;
+    vy *= params.movement_damping;
+
+    cursorx += vx;
+    cursory += vy;
+
+    if (cursorx < centrox - params.margin_x)
+        vx += params.return_force;
+
+    if (cursorx > centrox + params.margin_x)
+        vx -= params.return_force;
+
+    if (cursory < centroy - params.margin_y)
+        vy += params.return_force;
+
+    if (cursory > centroy + params.margin_y)
+        vy -= params.return_force;
+
+    angulo_global += params.tunnel_rotation_speed;
+
+    Capa nueva;
+
+    nueva.x = cursorx;
+    nueva.y = cursory;
+    nueva.radio = params.radio_inicial;
+    nueva.angulo = angulo_global;
+
+    crear_ruido_capa(
+        nueva,
+        ring_id_counter
+    );
+
+    ring_id_counter++;
+
+    capas.push_back(nueva);
+
+    if ((int)capas.size() > params.max_capas) {
+        capas.erase(capas.begin());
+    }
+
+    for (auto& c : capas) {
+        c.radio *= params.velocidad_expansion;
+    }
+
+    capas.erase(
+        std::remove_if(
+            capas.begin(),
+            capas.end(),
+            [](const Capa& c) {
+                return c.radio >= params.width * 1.6f;
+            }
+        ),
+        capas.end()
+    );
+}
+
+// =========================================================
 // MAIN
 // =========================================================
 
-int main() {
+int main(int argc, char** argv) {
     std::srand(
         unsigned(std::time(nullptr))
     );
 
+    std::string params_file =
+        "params_tunel.txt";
+
+    bool preview_mode =
+        false;
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg =
+            argv[i];
+
+        if (arg == "--params" && i + 1 < argc) {
+            params_file =
+                argv[i + 1];
+
+            i++;
+        }
+        else if (arg == "--preview") {
+            preview_mode =
+                true;
+        }
+    }
+
+    cargar_params(params_file);
+
+    centrox = params.width * 0.5f;
+    centroy = params.height * 0.5f;
+
+    cursorx = centrox;
+    cursory = centroy;
+
+    light_screen_x = centrox;
+    light_screen_y = centroy;
+
+    int max_faces =
+        params.max_capas *
+        params.num_lados;
+
+    size_t frame_bytes =
+        size_t(params.width) *
+        size_t(params.height) *
+        3;
+
+    size_t depth_bytes =
+        size_t(params.width) *
+        size_t(params.height) *
+        sizeof(int);
+
     cudaMalloc(
         &d_frame,
-        WIDTH * HEIGHT * 3
+        frame_bytes
     );
 
     cudaMalloc(
         &d_depth,
-        WIDTH * HEIGHT * sizeof(int)
+        depth_bytes
     );
 
     cudaMalloc(
@@ -917,14 +1121,14 @@ int main() {
     );
 
     cv::namedWindow(
-        "Frame",
+        preview_mode ? "Preview" : "Frame",
         cv::WINDOW_NORMAL
     );
 
     cv::resizeWindow(
-        "Frame",
-        WIDTH,
-        HEIGHT
+        preview_mode ? "Preview" : "Frame",
+        params.width,
+        params.height
     );
 
     std::time_t epoch =
@@ -935,32 +1139,40 @@ int main() {
         std::to_string(epoch) +
         ".mp4";
 
-    cv::VideoWriter out(
-        filename,
-        cv::VideoWriter::fourcc(
-            'm',
-            'p',
-            '4',
-            'v'
-        ),
-        FPS,
-        cv::Size(
-            WIDTH,
-            HEIGHT
-        )
-    );
+    cv::VideoWriter out;
 
-    if (!out.isOpened()) {
-        std::cerr
-            << "No se ha podido abrir el VideoWriter."
-            << std::endl;
+    if (!preview_mode) {
+        out.open(
+            filename,
+            cv::VideoWriter::fourcc(
+                'm',
+                'p',
+                '4',
+                'v'
+            ),
+            params.fps,
+            cv::Size(
+                params.width,
+                params.height
+            )
+        );
 
-        return 1;
+        if (!out.isOpened()) {
+            std::cerr
+                << "No se ha podido abrir el VideoWriter."
+                << std::endl;
+
+            cudaFree(d_frame);
+            cudaFree(d_depth);
+            cudaFree(d_faces);
+
+            return 1;
+        }
     }
 
     cv::Mat frame(
-        HEIGHT,
-        WIDTH,
+        params.height,
+        params.width,
         CV_8UC3
     );
 
@@ -970,125 +1182,39 @@ int main() {
 
     faces.reserve(max_faces);
 
+    int total_frames =
+        params.fps *
+        params.duracion;
+
+    if (preview_mode) {
+        total_frames =
+            params.preview_frame + 1;
+    }
+
     auto start =
         std::chrono::high_resolution_clock::now();
 
-    std::cout
-        << "Generando vídeo: "
-        << filename
-        << std::endl;
-
     for (
         int contador = 0;
-        contador < TOTAL_FRAMES;
+        contador < total_frames;
         contador++
     ) {
-        auto now =
-            std::chrono::high_resolution_clock::now();
-
         float t =
-            std::chrono::duration<float>(
-                now - start
-            ).count();
+            float(contador) /
+            float(params.fps);
 
-        // -------------------------------------------------
-        // MOVEMENT
-        // -------------------------------------------------
-
-        vx +=
-            ((float(std::rand()) / RAND_MAX) - 0.5f) *
-            1.2f;
-
-        vy +=
-            ((float(std::rand()) / RAND_MAX) - 0.5f) *
-            1.2f;
-
-        vx *= 0.97f;
-        vy *= 0.97f;
-
-        cursorx += vx;
-        cursory += vy;
-
-        float margen_x = 420.0f;
-        float margen_y = 260.0f;
-
-        if (cursorx < centrox - margen_x) {
-            vx += 1.8f;
-        }
-
-        if (cursorx > centrox + margen_x) {
-            vx -= 1.8f;
-        }
-
-        if (cursory < centroy - margen_y) {
-            vy += 1.8f;
-        }
-
-        if (cursory > centroy + margen_y) {
-            vy -= 1.8f;
-        }
-
-        angulo_global += 0.012f;
-
-        // -------------------------------------------------
-        // CREATE RING
-        // -------------------------------------------------
-
-        Capa nueva;
-
-        nueva.x = cursorx;
-        nueva.y = cursory;
-        nueva.radio = RADIO_INICIAL;
-        nueva.angulo = angulo_global;
-
-        crear_ruido_capa(
-            nueva,
-            ring_id_counter
-        );
-
-        ring_id_counter++;
-
-        capas.push_back(nueva);
-
-        if ((int)capas.size() > MAX_CAPAS) {
-            capas.erase(capas.begin());
-        }
-
-        // -------------------------------------------------
-        // EXPAND
-        // -------------------------------------------------
-
-        for (auto& c : capas) {
-            c.radio *= VELOCIDAD_EXPANSION;
-        }
-
-        capas.erase(
-            std::remove_if(
-                capas.begin(),
-                capas.end(),
-                [](const Capa& c) {
-                    return c.radio >= WIDTH * 1.6f;
-                }
-            ),
-            capas.end()
-        );
-
-        // -------------------------------------------------
-        // LIGHT + FACES
-        // -------------------------------------------------
+        simular_paso();
 
         actualizar_luz(t);
 
         construir_faces(faces);
 
-        // -------------------------------------------------
-        // CLEAR GPU FRAME
-        // -------------------------------------------------
-
         int total_pixels =
-            WIDTH * HEIGHT;
+            params.width *
+            params.height;
 
-        int threads_clear = 256;
+        int threads_clear =
+            256;
 
         int blocks_clear =
             (total_pixels + threads_clear - 1) /
@@ -1099,12 +1225,10 @@ int main() {
             threads_clear
         >>>(
             d_frame,
-            d_depth
+            d_depth,
+            params.width,
+            params.height
         );
-
-        // -------------------------------------------------
-        // RASTER GPU
-        // -------------------------------------------------
 
         if (!faces.empty()) {
             cudaMemcpy(
@@ -1121,35 +1245,25 @@ int main() {
                 d_frame,
                 d_depth,
                 d_faces,
-                int(faces.size())
+                int(faces.size()),
+                params.width,
+                params.height
             );
         }
 
         cudaDeviceSynchronize();
 
-        // -------------------------------------------------
-        // COPY BACK
-        // -------------------------------------------------
-
         cudaMemcpy(
             frame.data,
             d_frame,
-            WIDTH * HEIGHT * 3,
+            frame_bytes,
             cudaMemcpyDeviceToHost
         );
-
-        // -------------------------------------------------
-        // WIREFRAME
-        // -------------------------------------------------
 
         dibujar_wireframe_cpu(
             frame,
             faces
         );
-
-        // -------------------------------------------------
-        // BLOOM
-        // -------------------------------------------------
 
         cv::GaussianBlur(
             frame,
@@ -1167,78 +1281,58 @@ int main() {
             frame
         );
 
-        // -------------------------------------------------
-        // LIGHT
-        // -------------------------------------------------
-
         dibujar_luz_cpu(frame);
 
-        // -------------------------------------------------
-// DISPLAY / SAVE
-// -------------------------------------------------
-
-if (contador % 100 == 0 || contador == TOTAL_FRAMES - 1) {
-    cv::imshow(
-        "Frame",
-        frame
-    );
-
-    int key =
-        cv::waitKey(1) & 0xFF;
-
-    if (key == 27 || key == 'q') {
-        break;
-    }
-}
-
-out.write(frame);
-
-        // -------------------------------------------------
-        // PROGRESS BAR
-        // -------------------------------------------------
-
-        auto progress_now =
-            std::chrono::high_resolution_clock::now();
-
-        double elapsed =
-            std::chrono::duration<double>(
-                progress_now - start
-            ).count();
-
-        if (
-            contador % 10 == 0 ||
-            contador == TOTAL_FRAMES - 1
-        ) {
-            print_progress_bar(
-                contador + 1,
-                TOTAL_FRAMES,
-                elapsed,
-                filename
+        if (preview_mode && contador == params.preview_frame) {
+            cv::imwrite(
+                "preview_tunel.png",
+                frame
             );
-        }
 
-        int key =
-            cv::waitKey(1) & 0xFF;
+            cv::imshow(
+                "Preview",
+                frame
+            );
 
-        if (key == 27 || key == 'q') {
+            std::cout
+                << "Preview guardado en: preview_tunel.png"
+                << std::endl;
+
+            cv::waitKey(0);
             break;
         }
+
+        if (!preview_mode) {
+            cv::imshow(
+                "Frame",
+                frame
+            );
+
+            out.write(frame);
+
+            int key =
+                cv::waitKey(1) & 0xFF;
+
+            if (key == 27 || key == 'q') {
+                break;
+            }
+        }
     }
 
-    std::cout << std::endl;
+    if (!preview_mode) {
+        out.release();
 
-    out.release();
+        std::cout
+            << "Video guardado en: "
+            << filename
+            << std::endl;
+    }
 
     cudaFree(d_frame);
     cudaFree(d_depth);
     cudaFree(d_faces);
 
     cv::destroyAllWindows();
-
-    std::cout
-        << "Video guardado en: "
-        << filename
-        << std::endl;
 
     return 0;
 }
